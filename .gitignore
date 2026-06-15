@@ -1,0 +1,28 @@
+# Compiled binaries
+/klauscode
+/bender
+*.exe
+*.out
+
+# Test & coverage artifacts
+*.test
+coverage.out
+*.cover
+
+# Go workspace
+go.work
+go.work.sum
+
+# Local environment / secrets
+.env
+.env.local
+
+# Local Claude Code settings (keep .claude/CLAUDE.md tracked)
+.claude/settings.json
+.claude/settings.local.json
+
+# Editor & OS cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
