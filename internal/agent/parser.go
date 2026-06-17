@@ -18,8 +18,14 @@ type Step struct {
 }
 
 var (
-	// finalRe captures everything after "Final Answer:" to end of input.
-	finalRe = regexp.MustCompile(`(?s)Final Answer:\s*(.*)`)
+	// finalRe captures everything after a "Final Answer:" label to the end of the
+	// turn. It is deliberately lenient because small local models render the label
+	// inconsistently: it is case-insensitive, tolerates surrounding markdown
+	// emphasis (e.g. **Final Answer:**), and allows extra whitespace between the
+	// two words and before the colon. The multiline `^` anchor keeps it from
+	// matching the phrase mid-sentence inside a Thought, and the `s` flag lets a
+	// multi-line answer be captured to the end of input.
+	finalRe = regexp.MustCompile(`(?ims)^\s*\**\s*final\s+answer\s*\**\s*:\s*\**\s*(.*)`)
 	// actionRe matches a whole line that is an Action and captures the tool name
 	// and the raw argument text inside the parentheses. It is anchored to the
 	// full line (^…$) so an "Action: …" that merely appears inside prose — e.g.
@@ -68,6 +74,18 @@ func lastNonEmptyLine(s string) string {
 		}
 	}
 	return ""
+}
+
+// stripThoughtPrefix removes a leading "Thought:" label from a turn the harness
+// is about to return as an implicit final answer (see Agent.Run), so the user
+// sees the model's prose without the internal ReAct scaffolding. Only the label
+// word is removed; the text after it — which is the actual answer — is kept.
+func stripThoughtPrefix(s string) string {
+	s = strings.TrimSpace(s)
+	if t := strings.TrimPrefix(s, "Thought:"); t != s {
+		return strings.TrimSpace(t)
+	}
+	return s
 }
 
 // namedArgRe matches a leading `name:` / `name=` keyword-argument wrapper, e.g.

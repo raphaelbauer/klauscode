@@ -114,6 +114,57 @@ func TestAgentRunMalformedThenRecovers(t *testing.T) {
 	}
 }
 
+func TestAgentRunImplicitFinalAfterSecondMiss(t *testing.T) {
+	// given a model (e.g. a small local model) that never writes the
+	// "Final Answer:" prefix and just keeps replying in prose
+	client := &scriptedClient{replies: []string{
+		"Thought: I think the capital of France is Paris.",
+		"Thought: The capital of France is Paris.",
+	}}
+	ag := newTestAgent(client)
+
+	// when the agent runs
+	answer, err := ag.Run(context.Background(), "What is the capital of France?")
+
+	// then it nudges once, and on the second prose turn returns that turn as the
+	// final answer (with the "Thought:" scaffolding stripped) rather than looping
+	// to the step limit
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if answer != "The capital of France is Paris." {
+		t.Errorf("answer = %q, want %q", answer, "The capital of France is Paris.")
+	}
+	if client.calls != 2 {
+		t.Errorf("expected 2 model calls, got %d", client.calls)
+	}
+}
+
+func TestAgentRunEmptyTurnDoesNotDiscardProseAnswer(t *testing.T) {
+	// given a model that produces a complete prose answer with no "Final Answer:"
+	// prefix and then, after being nudged, produces an empty turn because it
+	// considers itself done and has nothing to add (the observed Gemma trace)
+	answerText := "This project, called Klaus Code, is a minimalist AI agent harness written in Go."
+	client := &scriptedClient{replies: []string{
+		answerText,
+		"",
+	}}
+	ag := newTestAgent(client)
+
+	// when the agent runs
+	answer, err := ag.Run(context.Background(), "Summarize this project.")
+
+	// then the harness returns the substantive prose answer, NOT the empty
+	// follow-up turn (regression: an empty turn must not overwrite a good answer
+	// nor be returned as the final answer)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if answer != answerText {
+		t.Errorf("answer = %q, want %q", answer, answerText)
+	}
+}
+
 func TestAgentRunStepLimit(t *testing.T) {
 	// given a model that never produces a final answer
 	client := &scriptedClient{replies: []string{

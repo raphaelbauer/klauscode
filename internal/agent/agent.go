@@ -21,6 +21,11 @@ const observationStop = "Observation:"
 // calculation, so the default is generous; the limit still backstops a runaway.
 const defaultMaxSteps = 25
 
+// nudgeMessage is fed back as an observation when a turn carries neither a valid
+// Action nor a Final Answer, telling the model how to finish or how to call a
+// tool so it can self-correct on the next turn.
+const nudgeMessage = `Observation: No valid Action found. If the task is complete, write your reply on a line beginning with "Final Answer:". Otherwise respond with a single Action line as the last line of your turn.`
+
 // Agent drives a single task to completion through the ReAct loop.
 type Agent struct {
 	client   llm.Client
@@ -69,6 +74,14 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 		{Role: "user", Content: task},
 	}
 
+	// consecutiveMisses counts turns in a row that carried neither an Action nor a
+	// Final Answer; it resets whenever the model makes a tool call. candidateFinal
+	// holds the most recent *substantive* such turn, so a later empty turn (often
+	// the model's reply to the nudge once it considers itself done) cannot
+	// overwrite a good prose answer it already produced.
+	consecutiveMisses := 0
+	candidateFinal := ""
+
 	for i := 0; i < a.maxSteps; i++ {
 		output, err := a.client.Complete(ctx, messages, []string{observationStop})
 		if err != nil {
@@ -83,21 +96,47 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 			return step.FinalAnswer, nil
 		}
 
-		if !step.HasAction {
-			// The model broke format. Nudge it back rather than aborting.
+		if step.HasAction {
+			consecutiveMisses = 0
+			candidateFinal = ""
+			observation := a.runTool(step)
+			a.tracef("Observation: %s\n", observation)
 			messages = append(messages, llm.Message{
 				Role:    "user",
-				Content: "Observation: No valid Action found. Respond with either an Action line or a Final Answer.",
+				Content: "Observation: " + observation,
 			})
 			continue
 		}
 
-		observation := a.runTool(step)
-		a.tracef("Observation: %s\n", observation)
-		messages = append(messages, llm.Message{
-			Role:    "user",
-			Content: "Observation: " + observation,
-		})
+		// The turn has no Action and no "Final Answer:" prefix.
+		prose := stripThoughtPrefix(output)
+
+		if prose == "" {
+			// An empty turn carries no answer. If the model already produced a
+			// substantive prose reply on an earlier turn, return that rather than
+			// discarding it; otherwise nudge it to produce something usable.
+			if candidateFinal != "" {
+				return candidateFinal, nil
+			}
+			messages = append(messages, llm.Message{Role: "user", Content: nudgeMessage})
+			continue
+		}
+
+		// Substantive prose with no tool call. The first time, nudge the model
+		// toward the format — it may have malformed an action it meant to call, so
+		// the nudge gives it one chance to self-correct — but remember the prose so
+		// a follow-up empty turn cannot lose it. A second consecutive miss means
+		// the model has stopped requesting tools and is just talking to the user:
+		// in a ReAct loop a turn with no tool call is, by definition, the final
+		// response (small models routinely omit the "Final Answer:" prefix), so we
+		// return that prose instead of looping to the step limit.
+		candidateFinal = prose
+		consecutiveMisses++
+		if consecutiveMisses == 1 {
+			messages = append(messages, llm.Message{Role: "user", Content: nudgeMessage})
+			continue
+		}
+		return prose, nil
 	}
 
 	return "", fmt.Errorf("reached step limit (%d) without a final answer", a.maxSteps)
