@@ -20,16 +20,22 @@ type Step struct {
 var (
 	// finalRe captures everything after "Final Answer:" to end of input.
 	finalRe = regexp.MustCompile(`(?s)Final Answer:\s*(.*)`)
-	// actionRe captures the tool name and the raw argument text inside the
-	// parentheses of an Action line.
-	actionRe = regexp.MustCompile(`Action:\s*([A-Za-z_]\w*)\s*\((.*)\)`)
+	// actionRe matches a whole line that is an Action and captures the tool name
+	// and the raw argument text inside the parentheses. It is anchored to the
+	// full line (^…$) so an "Action: …" that merely appears inside prose — e.g.
+	// a documentation example the model writes in backticks — cannot match.
+	actionRe = regexp.MustCompile(`^Action:\s*([A-Za-z_]\w*)\s*\((.*)\)\s*$`)
 )
 
 // ParseStep extracts the action and/or final answer from a model turn.
 //
 // A final answer takes precedence: if the model wrote one we ignore any action,
-// since the run is over. Otherwise we look for the last Action line in the turn
-// (the most recent intent if the model rambled).
+// since the run is over. Otherwise an Action is honored only when it is the
+// model's final non-empty line. The ReAct loop stops generation at
+// "Observation:", so a genuine tool call is the last thing the model writes;
+// anything after it (more prose, a worked example) means the "Action:" we would
+// otherwise match is documentation, not a live request — running it caused the
+// `sh: -c: syntax error` observations from prose like "e.g. `Action: bash(ls -R)`".
 func ParseStep(output string) Step {
 	var step Step
 
@@ -39,14 +45,29 @@ func ParseStep(output string) Step {
 		return step
 	}
 
-	if matches := actionRe.FindAllStringSubmatch(output, -1); len(matches) > 0 {
-		last := matches[len(matches)-1]
-		step.HasAction = true
-		step.ToolName = last[1]
-		step.ToolArgs = normalizeArgs(strings.TrimSpace(last[2]))
+	if last := lastNonEmptyLine(output); last != "" {
+		if m := actionRe.FindStringSubmatch(last); m != nil {
+			step.HasAction = true
+			step.ToolName = m[1]
+			step.ToolArgs = normalizeArgs(strings.TrimSpace(m[2]))
+		}
 	}
 
 	return step
+}
+
+// lastNonEmptyLine returns the last line of s that has non-whitespace content,
+// trimmed of surrounding whitespace. It returns "" when s is empty or blank.
+// Actions are always a single physical line (JSON args escape newlines as \n),
+// so the final non-empty line is where a live tool call must appear.
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 // namedArgRe matches a leading `name:` / `name=` keyword-argument wrapper, e.g.
