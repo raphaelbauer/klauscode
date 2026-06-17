@@ -145,6 +145,93 @@ func TestParseStepLastActionWins(t *testing.T) {
 	}
 }
 
+func TestParseStepIgnoresActionInProse(t *testing.T) {
+	// given a final-answer-style turn (no "Final Answer:" prefix) that only
+	// *mentions* an Action as a documentation example, the way the model's
+	// project overview did — the literal "Action: bash(ls -R)" sits inside
+	// backticked prose, not on its own line.
+	output := "This project is an AI agent harness.\n" +
+		"The model requests a tool (e.g., `Action: bash(ls -R)`).\n" +
+		"In short, it is a tool-using agent."
+
+	// when parsed
+	step := ParseStep(output)
+
+	// then nothing is executed: the embedded example is not a live tool call,
+	// so the loop nudges the model instead of running `ls -R)` in a shell.
+	if step.HasAction {
+		t.Errorf("expected no action for an Action mentioned only in prose, got %+v", step)
+	}
+	if step.HasFinal {
+		t.Error("did not expect a final answer without a Final Answer: prefix")
+	}
+}
+
+func TestParseStepActionMustBeFinalLine(t *testing.T) {
+	// given an action that is followed by further prose, so it is not the
+	// model's last line (a real action is always last: the loop stops at
+	// "Observation:" right after the model emits it)
+	output := "Action: bash(ls)\nActually, on reflection, let me reconsider."
+
+	// when parsed
+	step := ParseStep(output)
+
+	// then the non-final action is ignored
+	if step.HasAction {
+		t.Errorf("expected no action when it is not the final line, got %+v", step)
+	}
+}
+
+func TestParseStepActionOnFinalLineWithProseAbove(t *testing.T) {
+	// given prose that mentions an example Action, followed by the genuine
+	// action on the final line
+	output := "An action looks like `Action: bash(pwd)`.\nAction: bash(ls)"
+
+	// when parsed
+	step := ParseStep(output)
+
+	// then the real final-line action wins, not the example above it
+	if !step.HasAction || step.ToolName != "bash" || step.ToolArgs != "ls" {
+		t.Errorf("expected final-line action bash(ls), got %+v", step)
+	}
+}
+
+func TestParseStepActionLinePositioning(t *testing.T) {
+	// given turns where the genuine final-line action is wrapped in whitespace
+	// the model commonly emits — these exercise lastNonEmptyLine, which trims
+	// each line and skips trailing blank ones before the regex runs.
+	tests := []struct {
+		name     string
+		output   string
+		wantAct  bool
+		wantArgs string
+	}{
+		// Models almost always end a turn with a newline; the action is still
+		// the last *non-empty* line and must be honored.
+		{"trailing blank lines", "Thought: list files.\nAction: bash(ls)\n\n   \n", true, "ls"},
+		// An action indented under a thought is trimmed before matching.
+		{"indented action line", "Thought: list files.\n    Action: bash(ls)", true, "ls"},
+		// Nothing to parse: no action, no panic.
+		{"empty output", "", false, ""},
+		{"whitespace-only output", "   \n\t\n", false, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when parsed
+			step := ParseStep(tt.output)
+
+			// then surrounding whitespace does not change whether the action fires
+			if step.HasAction != tt.wantAct {
+				t.Fatalf("HasAction = %v, want %v (step %+v)", step.HasAction, tt.wantAct, step)
+			}
+			if tt.wantAct && step.ToolArgs != tt.wantArgs {
+				t.Errorf("ToolArgs = %q, want %q", step.ToolArgs, tt.wantArgs)
+			}
+		})
+	}
+}
+
 func TestParseStepMalformed(t *testing.T) {
 	// given a turn with neither action nor final answer
 	output := "Thought: hmm, I'm not sure what to do."

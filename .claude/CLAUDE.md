@@ -33,6 +33,15 @@ Layered with interface-based DI; `cmd/klauscode` is the composition root.
 - Tool errors are returned to the model as `Observation: Error: ...` so it can
   self-correct; the run does not abort on a tool error.
 - Final answer takes precedence over an action in the same turn.
+- **An Action is honored only on the model's final non-empty line.** `actionRe`
+  is anchored (`^Action:…$`) and `ParseStep` matches it against
+  `lastNonEmptyLine(output)` only. This stops the harness from executing an
+  `Action: …` that appears inside prose — e.g. a worked example the model writes
+  in backticks when it produces a final-answer-shaped turn *without* the
+  `Final Answer:` prefix. That bug ran the example literally (`bash(ls -R)` →
+  `sh: -c: syntax error near unexpected token ')'`). When neither a final answer
+  nor a final-line action is found, the loop nudges the model (agent.go) rather
+  than acting.
 - **Tool argument styles.** Single-arg tools take the raw string inside the
   parentheses (like `calculate`). Multi-arg tools (`write_file`, `edit_file`)
   take a **single-line JSON object** decoded with a tolerant `json.Decoder`;

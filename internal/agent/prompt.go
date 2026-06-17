@@ -20,12 +20,14 @@ CRITICAL FORMAT RULES:
 You must strictly follow this exact format for every turn. Do not skip steps.
 
 Thought: [Reason about what you need to do next]
-Action: [tool_name]([arguments])
+Action: [tool_name]([arguments])   <- this MUST be the last line of your turn; the system then runs the tool and replies with the Observation
 Observation: [Do not write this yourself. The system will provide this.]
 
 When you have the final answer to the user's request, use this format:
 Thought: I have found the answer.
 Final Answer: [Your definitive response to the user]
+
+Every turn MUST end with exactly one of: a single Action line (as its last line) OR a "Final Answer:". Any text meant for the user — an explanation, summary, or report — is delivered ONLY when it follows the "Final Answer:" prefix, so never reply to the user without it. Reserve the literal word "Action:" for an actual tool call; do not write it inside explanations or examples.
 
 ARGUMENTS:
 - Put the argument value directly inside the parentheses. Do NOT name the parameter. Write Action: bash(ls -R), never Action: bash(command: "ls -R") or bash(command="ls -R").
