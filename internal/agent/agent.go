@@ -69,6 +69,10 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 		{Role: "user", Content: task},
 	}
 
+	// consecutiveMisses counts turns in a row that carried neither an Action nor a
+	// Final Answer. It resets whenever the model makes a tool call.
+	consecutiveMisses := 0
+
 	for i := 0; i < a.maxSteps; i++ {
 		output, err := a.client.Complete(ctx, messages, []string{observationStop})
 		if err != nil {
@@ -83,21 +87,35 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 			return step.FinalAnswer, nil
 		}
 
-		if !step.HasAction {
-			// The model broke format. Nudge it back rather than aborting.
+		if step.HasAction {
+			consecutiveMisses = 0
+			observation := a.runTool(step)
+			a.tracef("Observation: %s\n", observation)
 			messages = append(messages, llm.Message{
 				Role:    "user",
-				Content: "Observation: No valid Action found. Respond with either an Action line or a Final Answer.",
+				Content: "Observation: " + observation,
 			})
 			continue
 		}
 
-		observation := a.runTool(step)
-		a.tracef("Observation: %s\n", observation)
-		messages = append(messages, llm.Message{
-			Role:    "user",
-			Content: "Observation: " + observation,
-		})
+		// The turn has no Action and no "Final Answer:" prefix. The first time,
+		// nudge the model toward the format — it may have malformed an action it
+		// meant to call, and the nudge gives it one chance to self-correct.
+		//
+		// But a second miss in a row means the model has stopped requesting tools
+		// and is just talking to the user. In a ReAct loop a turn with no tool
+		// call is, by definition, the final response — small models routinely omit
+		// the "Final Answer:" prefix entirely — so we return that prose as the
+		// answer instead of nudging forever and failing at the step limit.
+		consecutiveMisses++
+		if consecutiveMisses == 1 {
+			messages = append(messages, llm.Message{
+				Role:    "user",
+				Content: `Observation: No valid Action found. If the task is complete, write your reply on a line beginning with "Final Answer:". Otherwise respond with a single Action line as the last line of your turn.`,
+			})
+			continue
+		}
+		return stripThoughtPrefix(output), nil
 	}
 
 	return "", fmt.Errorf("reached step limit (%d) without a final answer", a.maxSteps)

@@ -114,6 +114,32 @@ func TestAgentRunMalformedThenRecovers(t *testing.T) {
 	}
 }
 
+func TestAgentRunImplicitFinalAfterSecondMiss(t *testing.T) {
+	// given a model (e.g. a small local model) that never writes the
+	// "Final Answer:" prefix and just keeps replying in prose
+	client := &scriptedClient{replies: []string{
+		"Thought: I think the capital of France is Paris.",
+		"Thought: The capital of France is Paris.",
+	}}
+	ag := newTestAgent(client)
+
+	// when the agent runs
+	answer, err := ag.Run(context.Background(), "What is the capital of France?")
+
+	// then it nudges once, and on the second prose turn returns that turn as the
+	// final answer (with the "Thought:" scaffolding stripped) rather than looping
+	// to the step limit
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if answer != "The capital of France is Paris." {
+		t.Errorf("answer = %q, want %q", answer, "The capital of France is Paris.")
+	}
+	if client.calls != 2 {
+		t.Errorf("expected 2 model calls, got %d", client.calls)
+	}
+}
+
 func TestAgentRunStepLimit(t *testing.T) {
 	// given a model that never produces a final answer
 	client := &scriptedClient{replies: []string{

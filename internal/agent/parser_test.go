@@ -119,6 +119,56 @@ func TestParseStepFinalAnswer(t *testing.T) {
 	}
 }
 
+func TestParseStepFinalAnswerLenientLabels(t *testing.T) {
+	// given final-answer turns whose label small local models render
+	// inconsistently — different case, markdown emphasis, and extra spacing
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{"lowercase", "final answer: 42", "42"},
+		{"upper", "FINAL ANSWER: 42", "42"},
+		{"markdown bold around phrase", "**Final Answer:** 42", "42"},
+		{"markdown bold around words", "**Final Answer**: 42", "42"},
+		{"extra spaces", "Final   Answer : 42", "42"},
+		{"after a thought line", "Thought: done.\nfinal answer: 42", "42"},
+		{"multi-line answer kept", "Final Answer: line one\nline two", "line one\nline two"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when parsed
+			step := ParseStep(tt.output)
+
+			// then the final answer is detected despite the label variation
+			if !step.HasFinal {
+				t.Fatalf("expected HasFinal for %q", tt.output)
+			}
+			if step.FinalAnswer != tt.want {
+				t.Errorf("FinalAnswer = %q, want %q", step.FinalAnswer, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseStepNoFalseFinalMidSentence(t *testing.T) {
+	// given a thought that merely mentions the phrase mid-sentence, not as a label
+	output := "Thought: I will now compute the final answer: let me use calculate.\nAction: calculate(1+1)"
+
+	// when parsed
+	step := ParseStep(output)
+
+	// then the `^`-anchored regex does not treat the mention as a final answer,
+	// and the genuine action is still honored
+	if step.HasFinal {
+		t.Errorf("did not expect a final answer from a mid-sentence mention, got %+v", step)
+	}
+	if !step.HasAction || step.ToolArgs != "1+1" {
+		t.Errorf("expected action calculate(1+1), got %+v", step)
+	}
+}
+
 func TestParseStepFinalTakesPrecedence(t *testing.T) {
 	// given a turn with both an action and a final answer
 	output := "Action: calculate(1+1)\nFinal Answer: done"
