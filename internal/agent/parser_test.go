@@ -51,6 +51,38 @@ func TestParseStepStripsSurroundingQuotes(t *testing.T) {
 	}
 }
 
+func TestParseStepStripsNamedArgWrapper(t *testing.T) {
+	// given turns where the model imitated a name(param: type) signature and
+	// wrapped the value in a keyword argument
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{"colon form", `Action: bash(command: "ls -R")`, "ls -R"},
+		{"equals form", `Action: bash(command="ls -R")`, "ls -R"},
+		{"single quoted value", `Action: read_file(path: 'main.go')`, "main.go"},
+		// An env-var prefix has an unquoted value: it is a real command, kept verbatim.
+		{"env prefix preserved", `Action: bash(FOO=bar ./script)`, "FOO=bar ./script"},
+		// A plain command with no wrapper is unchanged.
+		{"plain command unchanged", `Action: bash(ls -R)`, "ls -R"},
+		// A quoted value that is itself a real command stays a command.
+		{"quoted command unwrapped", `Action: bash("ls -R")`, "ls -R"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when parsed
+			step := ParseStep(tt.output)
+
+			// then the keyword wrapper is removed but real commands are preserved
+			if step.ToolArgs != tt.want {
+				t.Errorf("ToolArgs = %q, want %q", step.ToolArgs, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseStepJSONArgsWithParen(t *testing.T) {
 	// given an action whose single-line JSON argument contains a ')' character
 	output := `Action: write_file({"path":"a","content":"x)y"})`

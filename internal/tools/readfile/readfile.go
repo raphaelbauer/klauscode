@@ -22,7 +22,7 @@ func New() *ReadFileTool { return &ReadFileTool{} }
 func (t *ReadFileTool) Name() string { return "read_file" }
 
 func (t *ReadFileTool) Description() string {
-	return "read_file(path: str): Read a file and return its contents."
+	return "read_file(<path>): Read a file and return its contents. Put the path directly inside the parentheses, e.g. read_file(internal/agent/agent.go)."
 }
 
 // Call reads the file named by args (the raw path) and returns its contents,

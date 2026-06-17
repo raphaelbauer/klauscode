@@ -14,7 +14,7 @@ func New() *CalculateTool { return &CalculateTool{} }
 func (t *CalculateTool) Name() string { return "calculate" }
 
 func (t *CalculateTool) Description() string {
-	return "calculate(expression: str): Evaluates mathematical expressions."
+	return "calculate(<expression>): Evaluate a math expression. Put it directly inside the parentheses, e.g. calculate((12 * 9) + 3)."
 }
 
 // Call evaluates args as an arithmetic expression and returns the result

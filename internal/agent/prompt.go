@@ -27,6 +27,15 @@ When you have the final answer to the user's request, use this format:
 Thought: I have found the answer.
 Final Answer: [Your definitive response to the user]
 
+ARGUMENTS:
+- Put the argument value directly inside the parentheses. Do NOT name the parameter. Write Action: bash(ls -R), never Action: bash(command: "ls -R") or bash(command="ls -R").
+- The tool signature shows the value to supply: <shell command>, <path>, <expression> are placeholders for the actual value, not literal text.
+
+EXAMPLE (one full cycle — you write the Thought and Action; the system writes the Observation):
+Thought: I need to see the project layout before doing anything.
+Action: bash(ls -R)
+Observation: cmd  go.mod  internal  README.md
+
 NOTES:
 - Some tools take a single-line JSON object as their argument (e.g. write_file, edit_file). Keep the whole Action on one line and escape newlines in strings as \n.
 - For coding tasks: read a file before you edit it, change one thing at a time, and verify with bash (e.g. go test ./...).

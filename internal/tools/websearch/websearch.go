@@ -63,7 +63,7 @@ func New(opts ...Option) *WebSearchTool {
 func (t *WebSearchTool) Name() string { return "web_search" }
 
 func (t *WebSearchTool) Description() string {
-	return "web_search(query: str): Search the web (DuckDuckGo). Returns top results as title — url — snippet."
+	return "web_search(<query>): Search the web (DuckDuckGo). Put the query directly inside the parentheses, e.g. web_search(golang context package). Returns top results as title — url — snippet."
 }
 
 // Call runs the query and returns up to maxResults results, wrapped as untrusted

@@ -39,6 +39,14 @@ Layered with interface-based DI; `cmd/klauscode` is the composition root.
   JSON escapes newlines as `\n`, so the existing single-line Action parser is
   unchanged. The parser regex is single-line (no `(?s)`), so JSON content must
   stay on one physical line.
+- **Single-arg tool descriptions must NOT read like named params.** A signature
+  such as `bash(command: str)` makes the model emit `bash(command: "ls -R")`;
+  the harness then runs the literal word `command:` (`sh: command:: command not
+  found`). Document single-arg tools as `name(<value>)` with a concrete example
+  (`bash(ls -R)`), never `name(param: type)`. As a backstop, `normalizeArgs` in
+  `parser.go` strips a `name:`/`name=` wrapper **only when the value is quoted**,
+  so a real env-var prefix like `FOO=bar ./script` survives. `prompt.go` also
+  carries an explicit ARGUMENTS rule + worked example.
 - `bash` returns a non-zero exit / timeout as a normal observation (output +
   `[exit code: N]` / `[timed out ...]`), not a Go error — the output is signal
   the model reads to recover.
