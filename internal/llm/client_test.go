@@ -12,9 +12,11 @@ import (
 func TestOpenAIClientComplete(t *testing.T) {
 	// given a stub server that records the request and returns a canned reply
 	var gotAuth string
+	var gotPath string
 	var gotBody chatRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &gotBody)
 
@@ -23,7 +25,8 @@ func TestOpenAIClientComplete(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewOpenAIClient("test-key", "gpt-4o-mini", WithBaseURL(server.URL))
+	// base URL ends in /v1; the client should append /chat/completions
+	client := NewOpenAIClient("test-key", "gpt-4o-mini", WithBaseURL(server.URL+"/v1"))
 
 	// when Complete is called
 	out, err := client.Complete(
@@ -42,6 +45,9 @@ func TestOpenAIClientComplete(t *testing.T) {
 	if gotAuth != "Bearer test-key" {
 		t.Errorf("Authorization = %q, want %q", gotAuth, "Bearer test-key")
 	}
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("path = %q, want %q", gotPath, "/v1/chat/completions")
+	}
 	if gotBody.Model != "gpt-4o-mini" {
 		t.Errorf("model = %q, want %q", gotBody.Model, "gpt-4o-mini")
 	}
@@ -50,6 +56,28 @@ func TestOpenAIClientComplete(t *testing.T) {
 	}
 	if len(gotBody.Messages) != 1 || gotBody.Messages[0].Content != "2+2" {
 		t.Errorf("messages = %+v, want one user message", gotBody.Messages)
+	}
+}
+
+func TestOpenAIClientBaseURLTrailingSlash(t *testing.T) {
+	// given a base URL with a trailing slash
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient("k", "m", WithBaseURL(server.URL+"/v1/"))
+
+	// when Complete is called
+	if _, err := client.Complete(context.Background(), nil, nil); err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+
+	// then the trailing slash is trimmed, not doubled
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("path = %q, want %q", gotPath, "/v1/chat/completions")
 	}
 }
 

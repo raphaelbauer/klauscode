@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -29,8 +30,9 @@ type Client interface {
 	Complete(ctx context.Context, messages []Message, stop []string) (string, error)
 }
 
-// defaultBaseURL is the OpenAI chat completions endpoint.
-const defaultBaseURL = "https://api.openai.com/v1/chat/completions"
+// defaultBaseURL is the OpenAI API base URL. The chat completions path is
+// appended to it when a request is built.
+const defaultBaseURL = "https://api.openai.com/v1"
 
 // OpenAIClient is a Client backed by the OpenAI chat completions API.
 type OpenAIClient struct {
@@ -43,7 +45,9 @@ type OpenAIClient struct {
 // Option configures an OpenAIClient.
 type Option func(*OpenAIClient)
 
-// WithBaseURL overrides the API endpoint. Used by tests to point at httptest.
+// WithBaseURL overrides the API base URL (the part ending in /v1), e.g. a local
+// OpenAI-compatible server such as LM Studio, or an httptest server in tests.
+// The /chat/completions path is appended automatically.
 func WithBaseURL(url string) Option {
 	return func(c *OpenAIClient) { c.baseURL = url }
 }
@@ -100,7 +104,8 @@ func (c *OpenAIClient) Complete(ctx context.Context, messages []Message, stop []
 		return "", fmt.Errorf("encode request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(payload))
+	endpoint := strings.TrimRight(c.baseURL, "/") + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("build request: %w", err)
 	}

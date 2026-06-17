@@ -31,9 +31,17 @@ func main() {
 }
 
 func run() error {
+	// OPENAI_BASE_URL points at an OpenAI-compatible server, e.g. a local
+	// LM Studio at http://127.0.0.1:1234/v1. Empty means the public OpenAI API.
+	baseURL := os.Getenv("OPENAI_BASE_URL")
+
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
-		return fmt.Errorf("OPENAI_API_KEY is not set")
+		if baseURL == "" {
+			return fmt.Errorf("OPENAI_API_KEY is not set")
+		}
+		// Local OpenAI-compatible servers (e.g. LM Studio) ignore the key.
+		apiKey = "not-needed"
 	}
 
 	task := strings.TrimSpace(strings.Join(os.Args[1:], " "))
@@ -47,7 +55,11 @@ func run() error {
 	}
 
 	// Composition root: wire concrete implementations together.
-	client := llm.NewOpenAIClient(apiKey, model)
+	var opts []llm.Option
+	if baseURL != "" {
+		opts = append(opts, llm.WithBaseURL(baseURL))
+	}
+	client := llm.NewOpenAIClient(apiKey, model, opts...)
 
 	registry := tools.NewRegistry()
 	registry.Register(calculate.New())

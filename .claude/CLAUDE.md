@@ -8,14 +8,17 @@ model's behalf.
 
 Layered with interface-based DI; `cmd/klauscode` is the composition root.
 
-- `internal/llm` — `Client` interface + OpenAI impl over `net/http`. Inject a
-  base URL via `WithBaseURL` for tests (httptest).
+- `internal/llm` — `Client` interface + OpenAI impl over `net/http`. Override the
+  API base URL (ending in `/v1`) via `WithBaseURL`; the client appends
+  `/chat/completions`. Used for local servers (LM Studio) and httptest.
 - `internal/tools` — `Tool` interface, `Registry`, the recursive-descent
   arithmetic evaluator (`eval.go`), and the `calculate` tool.
 - `internal/agent` — the ReAct loop (`agent.go`), the system prompt builder
   (`prompt.go`, renders the tool list from the registry), and the turn parser
   (`parser.go`).
-- `cmd/klauscode` — reads `OPENAI_API_KEY` / `OPENAI_MODEL`, wires, runs.
+- `cmd/klauscode` — reads `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL`,
+  wires, runs. When `OPENAI_BASE_URL` is set, the API key is optional (a
+  placeholder is used) so local OpenAI-compatible servers work without a key.
 
 ## Conventions
 

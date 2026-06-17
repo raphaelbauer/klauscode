@@ -48,6 +48,29 @@ go run ./cmd/klauscode "What is 7 * 6?" 2>/dev/null
 # 42
 ```
 
+### Configuration
+
+| Variable          | Default                      | Purpose                                            |
+| ----------------- | ---------------------------- | -------------------------------------------------- |
+| `OPENAI_API_KEY`  | _(required\*)_               | API key, sent as `Authorization: Bearer`.          |
+| `OPENAI_MODEL`    | `gpt-4o-mini`                | Model name.                                         |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1`  | API base URL (ending in `/v1`); `/chat/completions` is appended. |
+
+\* Required only for the public OpenAI API. When `OPENAI_BASE_URL` points at a
+local server, the key is optional (a placeholder is used).
+
+### Local OpenAI-compatible servers (e.g. LM Studio)
+
+Point `OPENAI_BASE_URL` at the server's `/v1` base and set `OPENAI_MODEL` to a
+model that is actually loaded (the `gpt-4o-mini` default won't exist locally).
+No API key is needed — local servers ignore it:
+
+```sh
+OPENAI_BASE_URL=http://127.0.0.1:1234/v1 \
+OPENAI_MODEL=<your-loaded-model> \
+go run ./cmd/klauscode "What is (12 * 9) + 3?"
+```
+
 ## Architecture
 
 Layered with interface-based dependency injection so each layer is unit-testable
