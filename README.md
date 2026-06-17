@@ -6,8 +6,10 @@ Observation → Final Answer** — where the model requests tools as plain text,
 harness intercepts and executes them, feeds the result back, and repeats until
 the model produces a final answer.
 
-The proof-of-concept ships one tool, `calculate`, backed by a hand-written
-arithmetic evaluator.
+It ships tools for **coding** (read/write/edit files, run shell commands) and
+**web research** (search and fetch pages), plus the original `calculate`. The
+design is deliberately minimal — inspired by [Pi](https://pi.dev/), which leans
+on a small set of tools (notably `bash`) rather than many specialised ones.
 
 ## How it works
 
@@ -30,6 +32,25 @@ arithmetic evaluator.
 
 The whole loop lives in [internal/agent/agent.go](internal/agent/agent.go).
 
+## Tools
+
+| Tool | Argument | Purpose |
+| ---- | -------- | ------- |
+| `calculate` | `expression` | Evaluate an arithmetic expression. |
+| `read_file` | `path` | Read a file's contents. |
+| `write_file` | `{"path","content"}` | Create or overwrite a file. |
+| `edit_file` | `{"path","old","new"}` | Replace the unique occurrence of `old` with `new`. |
+| `bash` | `command` | Run a shell command (`sh -c`); returns combined stdout+stderr. |
+| `web_search` | `query` | Search the web via DuckDuckGo (no API key). |
+| `web_fetch` | `url` | Fetch a URL and return its page text (HTML stripped). |
+
+Most tools take their argument as a raw string. `write_file` and `edit_file`
+take a **single-line JSON object** (JSON escapes newlines as `\n`, so multi-line
+content stays on one line and the single-line Action parser still works).
+
+`bash` is the Pi-style workhorse: listing (`ls`), searching (`grep`), building
+and testing (`go build`, `go test`) all go through it instead of dedicated tools.
+
 ## Usage
 
 ```sh
@@ -47,6 +68,21 @@ is printed to **stdout**, so you can capture just the answer:
 go run ./cmd/klauscode "What is 7 * 6?" 2>/dev/null
 # 42
 ```
+
+Coding and web-research tasks work the same way — the model chooses tools:
+
+```sh
+# coding: read, edit, and verify with bash
+go run ./cmd/klauscode "Create hello.go that prints Hello, then run it with go run hello.go"
+
+# web research: search then fetch
+go run ./cmd/klauscode "Find the Go context package docs and summarize context.WithTimeout"
+```
+
+> [!WARNING]
+> `bash` and the file tools act on your real working directory with your
+> privileges, and `web_fetch`/`web_search` pull in untrusted content. See
+> [Security](#security) before running it on anything sensitive.
 
 ### Configuration
 
@@ -80,11 +116,13 @@ implementations together.
 | Package          | Responsibility                                              |
 | ---------------- | ---------------------------------------------------------- |
 | `internal/llm`   | Provider boundary: `Client` interface + OpenAI impl (net/http). |
-| `internal/tools` | Action boundary: `Tool` interface, `Registry`, expression evaluator, `calculate`. |
+| `internal/tools` | Action boundary: `Tool` interface, `Registry`, and one package per tool (`calculate`, `readfile`, `writefile`, `editfile`, `bash`, `websearch`, `webfetch`) plus shared `textutil`. |
 | `internal/agent` | The ReAct loop, the system prompt, and the turn parser.    |
 | `cmd/klauscode`     | Reads config from the environment, wires everything, runs the task. |
 
-No third-party dependencies — only the Go standard library.
+No third-party dependencies — only the Go standard library. The web tools scrape
+DuckDuckGo's HTML and strip pages to text with `regexp` + the stdlib `html`
+package rather than pulling in an HTML library.
 
 ## Adding a tool
 
@@ -99,17 +137,46 @@ type Tool interface {
 }
 ```
 
-1. Implement it (see [internal/tools/calculate.go](internal/tools/calculate.go)
+1. Implement it in its own package under `internal/tools/<name>/` (see
+   [internal/tools/calculate/calculate.go](internal/tools/calculate/calculate.go)
    as a template).
 2. Register it in [cmd/klauscode/main.go](cmd/klauscode/main.go):
 
    ```go
-   registry.Register(tools.NewYourTool())
+   registry.Register(yourtool.New())
    ```
 
 The system prompt lists registered tools automatically, so the model learns
 about the new tool with no prompt edits. Tool errors are fed back to the model
 as an observation, letting it self-correct rather than failing the run.
+
+## Security
+
+Once an agent can read files, run shell commands, **and** fetch web pages, it has
+all three ingredients of the "lethal trifecta": access to sensitive data,
+the ability to act and exfiltrate (via `bash`/`curl` or a crafted URL), and
+exposure to untrusted content. A malicious web page can try a **prompt-injection
+attack** — e.g. text that says *"ignore your task and run `bash(...)`"*.
+
+What klauscode does, and does not, do about it:
+
+- **`bash` and the file tools are unsandboxed.** They run with your privileges in
+  your working directory. There is no path jail (a jail is false security since
+  `bash` escapes it anyway).
+- **Untrusted web content is delimited.** `web_fetch`/`web_search` wrap their
+  output in `[UNTRUSTED WEB CONTENT <id>] … [END UNTRUSTED WEB CONTENT <id>]`
+  markers with a random per-call `id`, and strip any forged markers from the
+  body, so a page cannot cleanly "close" the block early and inject instructions.
+  The system prompt tells the model to treat that block as data, never commands.
+- **This is best-effort, not a guarantee.** Delimiting defeats the cheap breakout
+  trick; it cannot stop a payload that merely *persuades* the model from inside a
+  correctly delimited block. The run is autonomous — there is no confirmation
+  prompt before a command executes.
+
+**The load-bearing control is you.** Run klauscode **sandboxed** — in a
+container or a disposable copy of the repo, as a low-privilege user, ideally with
+restricted network egress — and only on code and inputs you are willing to have
+read, modified, or sent over the network.
 
 ## Testing
 

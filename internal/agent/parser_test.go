@@ -51,6 +51,23 @@ func TestParseStepStripsSurroundingQuotes(t *testing.T) {
 	}
 }
 
+func TestParseStepJSONArgsWithParen(t *testing.T) {
+	// given an action whose single-line JSON argument contains a ')' character
+	output := `Action: write_file({"path":"a","content":"x)y"})`
+
+	// when parsed
+	step := ParseStep(output)
+
+	// then the greedy match stops at the action's own closing paren and the JSON
+	// passes through unquote() untouched (it does not start with a quote)
+	if !step.HasAction || step.ToolName != "write_file" {
+		t.Fatalf("expected write_file action, got %+v", step)
+	}
+	if step.ToolArgs != `{"path":"a","content":"x)y"}` {
+		t.Errorf("ToolArgs = %q, want %q", step.ToolArgs, `{"path":"a","content":"x)y"}`)
+	}
+}
+
 func TestParseStepFinalAnswer(t *testing.T) {
 	// given a turn with a final answer
 	output := "Thought: I have found the answer.\nFinal Answer: The result is 111."
