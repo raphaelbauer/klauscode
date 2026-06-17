@@ -17,7 +17,13 @@ import (
 	"klauscode/internal/agent"
 	"klauscode/internal/llm"
 	"klauscode/internal/tools"
+	"klauscode/internal/tools/bash"
 	"klauscode/internal/tools/calculate"
+	"klauscode/internal/tools/editfile"
+	"klauscode/internal/tools/readfile"
+	"klauscode/internal/tools/webfetch"
+	"klauscode/internal/tools/websearch"
+	"klauscode/internal/tools/writefile"
 )
 
 // defaultModel is used when OPENAI_MODEL is not set.
@@ -63,6 +69,12 @@ func run() error {
 
 	registry := tools.NewRegistry()
 	registry.Register(calculate.New())
+	registry.Register(readfile.New())
+	registry.Register(writefile.New())
+	registry.Register(editfile.New())
+	registry.Register(bash.New())
+	registry.Register(websearch.New())
+	registry.Register(webfetch.New())
 
 	ag := agent.New(client, registry, agent.WithTrace(os.Stderr))
 

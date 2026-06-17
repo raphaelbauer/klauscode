@@ -16,8 +16,10 @@ import (
 // observation, handing control back to the harness so it can run the tool.
 const observationStop = "Observation:"
 
-// defaultMaxSteps bounds the loop so a confused model cannot run forever.
-const defaultMaxSteps = 10
+// defaultMaxSteps bounds the loop so a confused model cannot run forever. Coding
+// workflows (read → edit → run tests → re-edit) take more turns than a one-shot
+// calculation, so the default is generous; the limit still backstops a runaway.
+const defaultMaxSteps = 25
 
 // Agent drives a single task to completion through the ReAct loop.
 type Agent struct {
