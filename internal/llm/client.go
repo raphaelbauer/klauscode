@@ -63,7 +63,7 @@ func NewOpenAIClient(apiKey, model string, opts ...Option) *OpenAIClient {
 		apiKey:     apiKey,
 		model:      model,
 		baseURL:    defaultBaseURL,
-		httpClient: &http.Client{Timeout: 60 * time.Second},
+		httpClient: &http.Client{Timeout: 5 * time.Minute},
 	}
 	for _, opt := range opts {
 		opt(c)
