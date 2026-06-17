@@ -43,10 +43,31 @@ func ParseStep(output string) Step {
 		last := matches[len(matches)-1]
 		step.HasAction = true
 		step.ToolName = last[1]
-		step.ToolArgs = unquote(strings.TrimSpace(last[2]))
+		step.ToolArgs = normalizeArgs(strings.TrimSpace(last[2]))
 	}
 
 	return step
+}
+
+// namedArgRe matches a leading `name:` / `name=` keyword-argument wrapper, e.g.
+// the `command:` in `bash(command: "ls -R")`. The captured group is the value.
+var namedArgRe = regexp.MustCompile(`^[A-Za-z_]\w*\s*[:=]\s*(.+)$`)
+
+// normalizeArgs turns the raw text inside an Action's parentheses into the value
+// a single-arg tool expects. It strips surrounding quotes and, as a backstop,
+// the `name:`/`name=` keyword wrapper that models emit by imitating a tool's
+// `name(param: type)` signature (the cause of `sh: command:: command not found`).
+//
+// The wrapper is only stripped when its value is a fully quoted string, so a
+// genuine shell command keeps its meaning — an env-var prefix like
+// `FOO=bar ./script` has an unquoted value and is left untouched.
+func normalizeArgs(s string) string {
+	if m := namedArgRe.FindStringSubmatch(s); m != nil {
+		if v := unquote(m[1]); v != m[1] {
+			return v
+		}
+	}
+	return unquote(s)
 }
 
 // unquote strips a single matched pair of surrounding single or double quotes.

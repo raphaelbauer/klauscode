@@ -41,7 +41,7 @@ func New(opts ...Option) *WebFetchTool {
 func (t *WebFetchTool) Name() string { return "web_fetch" }
 
 func (t *WebFetchTool) Description() string {
-	return "web_fetch(url: str): Fetch a URL and return its page text (HTML stripped)."
+	return "web_fetch(<url>): Fetch a URL and return its page text (HTML stripped). Put the URL directly inside the parentheses, e.g. web_fetch(https://pkg.go.dev/context)."
 }
 
 // Call fetches args (the raw URL), converts HTML to text and returns it wrapped

@@ -43,7 +43,7 @@ func (t *BashTool) WithTimeout(d time.Duration) *BashTool {
 func (t *BashTool) Name() string { return "bash" }
 
 func (t *BashTool) Description() string {
-	return "bash(command: str): Run a shell command (sh -c) and return combined stdout+stderr. Use for ls, grep, go build, go test."
+	return "bash(<shell command>): Run a shell command (sh -c) and return combined stdout+stderr. Put the command directly inside the parentheses, e.g. bash(ls -R) — not bash(command=\"ls -R\"). Use for ls, grep, go build, go test."
 }
 
 // Call runs args as a shell command and returns its combined output. A non-zero
