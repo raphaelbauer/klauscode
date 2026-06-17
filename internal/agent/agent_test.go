@@ -140,6 +140,31 @@ func TestAgentRunImplicitFinalAfterSecondMiss(t *testing.T) {
 	}
 }
 
+func TestAgentRunEmptyTurnDoesNotDiscardProseAnswer(t *testing.T) {
+	// given a model that produces a complete prose answer with no "Final Answer:"
+	// prefix and then, after being nudged, produces an empty turn because it
+	// considers itself done and has nothing to add (the observed Gemma trace)
+	answerText := "This project, called Klaus Code, is a minimalist AI agent harness written in Go."
+	client := &scriptedClient{replies: []string{
+		answerText,
+		"",
+	}}
+	ag := newTestAgent(client)
+
+	// when the agent runs
+	answer, err := ag.Run(context.Background(), "Summarize this project.")
+
+	// then the harness returns the substantive prose answer, NOT the empty
+	// follow-up turn (regression: an empty turn must not overwrite a good answer
+	// nor be returned as the final answer)
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if answer != answerText {
+		t.Errorf("answer = %q, want %q", answer, answerText)
+	}
+}
+
 func TestAgentRunStepLimit(t *testing.T) {
 	// given a model that never produces a final answer
 	client := &scriptedClient{replies: []string{

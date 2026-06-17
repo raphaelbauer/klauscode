@@ -43,6 +43,10 @@ Layered with interface-based DI; `cmd/klauscode` is the composition root.
   consecutive miss returns that prose as the answer via `stripThoughtPrefix`,
   because in a ReAct loop a turn with no tool call is by definition the final
   response. This guarantees termination instead of spinning to the step limit.
+  The loop remembers the most recent *substantive* such turn in `candidateFinal`
+  and never treats an **empty** turn as the answer: once a model has produced a
+  complete prose reply, the empty turn it often emits in response to the nudge
+  must not overwrite it (the symptom was an empty `--- final answer ---`).
 - **An Action is honored only on the model's final non-empty line.** `actionRe`
   is anchored (`^Action:…$`) and `ParseStep` matches it against
   `lastNonEmptyLine(output)` only. This stops the harness from executing an
