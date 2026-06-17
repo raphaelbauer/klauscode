@@ -1,5 +1,7 @@
 # Klaus Code
 
+[![CI](https://github.com/raphaelbauer/klauscode/actions/workflows/ci.yml/badge.svg)](https://github.com/raphaelbauer/klauscode/actions/workflows/ci.yml)
+
 A small, dependency-free **AI harness** in Go. It drives an OpenAI model through
 a [ReAct](https://arxiv.org/abs/2210.03629) loop — **Thought → Action →
 Observation → Final Answer** — where the model requests tools as plain text, the
