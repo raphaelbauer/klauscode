@@ -86,6 +86,40 @@ go run ./cmd/klauscode "Find the Go context package docs and summarize context.W
 > privileges, and `web_fetch`/`web_search` pull in untrusted content. See
 > [Security](#security) before running it on anything sensitive.
 
+### Building an executable
+
+`go run` compiles and runs in one step, which is handy during development. To
+produce a standalone binary instead, use `go build`:
+
+```sh
+go build -o klauscode ./cmd/klauscode
+./klauscode "What is (12 * 9) + 3?"
+```
+
+Two details worth knowing:
+
+- **Why `./cmd/klauscode`?** It tells Go *which* package to build. The executable
+  comes from the `package main` in [cmd/klauscode/main.go](cmd/klauscode/main.go),
+  not the repo root — the root holds only library packages (`internal/...`). This
+  `cmd/<appname>` layout is the standard Go convention for separating the
+  entrypoint from library code.
+- **Why `-o`?** It sets the **o**utput name/path. Without it, `go build` names the
+  binary after the source directory (here, `klauscode` — so it happens to be the
+  same) and drops it in the current directory. `-o` makes the name explicit and
+  lets you place it elsewhere, e.g. `-o build/klauscode`.
+
+To install the binary onto your `PATH` (into `$GOBIN`, or `$GOPATH/bin`):
+
+```sh
+go install ./cmd/klauscode
+```
+
+Cross-compile for another platform by setting `GOOS`/`GOARCH`:
+
+```sh
+GOOS=linux GOARCH=amd64 go build -o klauscode-linux ./cmd/klauscode
+```
+
 ### Configuration
 
 | Variable          | Default                      | Purpose                                            |
