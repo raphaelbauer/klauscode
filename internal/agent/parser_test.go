@@ -210,6 +210,29 @@ func TestParseStepMultiLineJSONNotFalseFinal(t *testing.T) {
 	}
 }
 
+func TestParseStepActionLabelInsideArgValue(t *testing.T) {
+	// given a write_file action whose content value itself contains a line that
+	// begins with "Action:" — the real-world case where the model writes a plan or
+	// transcript ABOUT this ReAct harness. actionOpenRe is line-anchored but not
+	// string-aware, so that embedded line matches as a (bogus) later opener; the
+	// genuine write_file call is the earlier opener.
+	output := "Thought: I'll write the plan.\n" +
+		"Action: write_file({\"path\": \"plan.md\", \"content\": \"Design notes.\n" +
+		"       Action: ask(\\\"which part should I refactor?\\\")\n" +
+		"done\"})"
+
+	// when parsed
+	step := ParseStep(output)
+
+	// then the genuine write_file call wins, not the "ask" embedded in its argument
+	if !step.HasAction || step.ToolName != "write_file" {
+		t.Fatalf("expected write_file action, got %+v", step)
+	}
+	if !strings.Contains(step.ToolArgs, "Action: ask(") {
+		t.Errorf("ToolArgs lost the embedded Action line: %q", step.ToolArgs)
+	}
+}
+
 func TestParseStepSingleLineJSONStillParses(t *testing.T) {
 	// given the original single-line JSON form (regression guard)
 	output := `Action: write_file({"path":"a","content":"x"})`
