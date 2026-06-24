@@ -28,12 +28,13 @@ const nudgeMessage = `Observation: No valid Action found. If the task is complet
 
 // Agent drives a single task to completion through the ReAct loop.
 type Agent struct {
-	client       llm.Client
-	tools        *tools.Registry
-	system       string
-	instructions string // optional user/project instructions injected into the prompt
-	maxSteps     int
-	trace        io.Writer // optional; receives each turn for visibility
+	client        llm.Client
+	tools         *tools.Registry
+	system        string
+	instructions  string // optional user/project instructions injected into the prompt
+	skillsCatalog string // optional Agent Skills catalog injected into the prompt
+	maxSteps      int
+	trace         io.Writer // optional; receives each turn for visibility
 }
 
 // Option configures an Agent.
@@ -59,6 +60,13 @@ func WithInstructions(s string) Option {
 	return func(a *Agent) { a.instructions = s }
 }
 
+// WithSkills injects an Agent Skills catalog (see skills.Catalog) into the system
+// prompt. The catalog lists each skill's name and description; the model loads a
+// skill's full instructions on demand via the skill tool.
+func WithSkills(catalog string) Option {
+	return func(a *Agent) { a.skillsCatalog = catalog }
+}
+
 // New builds an Agent. The system prompt is rendered from the registry so it
 // always reflects the tools actually available; it is built after options are
 // applied so WithInstructions can feed it.
@@ -71,7 +79,7 @@ func New(client llm.Client, reg *tools.Registry, opts ...Option) *Agent {
 	for _, opt := range opts {
 		opt(a)
 	}
-	a.system = BuildSystemPrompt(reg, a.instructions)
+	a.system = BuildSystemPrompt(reg, a.skillsCatalog, a.instructions)
 	return a
 }
 

@@ -13,19 +13,23 @@ Layered with interface-based DI; `cmd/klauscode` is the composition root.
   `/chat/completions`. Used for local servers (LM Studio) and httptest.
 - `internal/tools` — `Tool` interface and `Registry`, with one package per tool:
   `calculate` (recursive-descent arithmetic evaluator in `eval.go`), `readfile`,
-  `writefile`, `editfile`, `bash`, `websearch`, `webfetch`, plus shared text
-  helpers in `textutil` (HTML→text, truncation, untrusted-content wrapping).
-  Each tool package mirrors `calculate`: a struct, a `New()` constructor, and the
-  three `Tool` methods; structural typing means none of them import `tools`.
+  `writefile`, `editfile`, `bash`, `websearch`, `webfetch`, `skill` (serves Agent
+  Skill bodies on demand — see below), plus shared text helpers in `textutil`
+  (HTML→text, truncation, untrusted-content wrapping). Each tool package mirrors
+  `calculate`: a struct, a `New()` constructor, and the three `Tool` methods;
+  structural typing means none of them import `tools`.
+- `internal/skills` — discovers Agent Skills (`skills/<name>/SKILL.md`) and
+  renders the prompt catalog (see Agent Skills below). Standalone, zero-dep.
 - `internal/agent` — the ReAct loop (`agent.go`), the system prompt builder
-  (`prompt.go`, renders the tool list from the registry **and injects optional
-  user/project instructions** via `LoadInstructions`/`WithInstructions`), and the
-  turn parser (`parser.go`).
+  (`prompt.go`, renders the tool list from the registry **and injects an optional
+  Agent Skills catalog + user/project instructions** via `WithSkills` /
+  `LoadInstructions`/`WithInstructions`), and the turn parser (`parser.go`).
 - `cmd/klauscode` — reads `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL`,
   wires, runs. When `OPENAI_BASE_URL` is set, the API key is optional (a
   placeholder is used) so local OpenAI-compatible servers work without a key. It
   also resolves `~/.claude` + the cwd and feeds `agent.LoadInstructions` into
-  `agent.WithInstructions`.
+  `agent.WithInstructions`, plus `skills.Discover` into the `skill` tool and
+  `agent.WithSkills`.
 
 ## Instructions files (AGENTS.md / CLAUDE.md)
 
@@ -41,6 +45,29 @@ and `Let's begin.` stay last):
   system prompt **after** options are applied so `WithInstructions` can feed it.
 - The injected block is marked as **trusted** user instructions, distinct from
   the UNTRUSTED web-content markers — keep that distinction when editing prompts.
+
+## Agent Skills (skills/<name>/SKILL.md)
+
+Skills are named, on-demand capability packets, loaded via **progressive
+disclosure** so the prompt stays small even with many installed:
+
+- `skills.Discover(globalDir, projectDir)` scans `<dir>/skills/*/SKILL.md` in two
+  scopes: global `~/.claude/skills/` and project `./.claude/skills/` (main.go
+  passes `globalDir=~/.claude` and `projectDir=.claude`). A project skill
+  **overrides** a global one with the same `name`. A missing `skills/` dir is
+  normal (yields nothing); only a real read error aborts. Files lacking a valid
+  `name`+`description` are **skipped**, not fatal.
+- Each `SKILL.md` has minimal YAML-style frontmatter — `name` + `description`
+  only (no third-party YAML; `parseFrontmatter` reads top-level `key: value`
+  pairs between `---` fences and trims surrounding quotes). The rest is the body.
+- The system prompt lists only `name: description` per skill (via `skills.Catalog`
+  → `agent.WithSkills`), injected **between the tool list and the instructions**.
+  The model calls `skill(<name>)` (the `skill` tool) to load the full body only
+  when it decides the skill is relevant.
+- Skill bodies are local, user-authored, and therefore **trusted** content (same
+  class as instructions), distinct from the UNTRUSTED web-content markers. A body
+  can point the model at bundled files in the skill's `Dir`, which it reads with
+  `read_file`.
 
 ## Conventions
 

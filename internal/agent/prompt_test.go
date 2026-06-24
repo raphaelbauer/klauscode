@@ -134,7 +134,7 @@ func TestBuildSystemPromptWithInstructions(t *testing.T) {
 	reg.Register(calculate.New())
 
 	// when building the prompt with instructions
-	prompt := BuildSystemPrompt(reg, "always answer in French")
+	prompt := BuildSystemPrompt(reg, "", "always answer in French")
 
 	// then the instructions section and the footer are both present
 	if !strings.Contains(prompt, "USER & PROJECT INSTRUCTIONS") {
@@ -154,10 +154,53 @@ func TestBuildSystemPromptWithoutInstructions(t *testing.T) {
 	reg.Register(calculate.New())
 
 	// when building the prompt with only whitespace
-	prompt := BuildSystemPrompt(reg, "   \n  ")
+	prompt := BuildSystemPrompt(reg, "", "   \n  ")
 
 	// then no instructions section is emitted
 	if strings.Contains(prompt, "USER & PROJECT INSTRUCTIONS") {
 		t.Errorf("unexpected instructions marker for blank instructions")
+	}
+}
+
+func TestBuildSystemPromptWithSkills(t *testing.T) {
+	// given a registry and an Agent Skills catalog
+	reg := tools.NewRegistry()
+	reg.Register(calculate.New())
+	catalog := "- greet: Greet a person enthusiastically by name."
+
+	// when building the prompt with the catalog and some instructions
+	prompt := BuildSystemPrompt(reg, catalog, "always answer in French")
+
+	// then the skills section, its content, and the footer are all present
+	if !strings.Contains(prompt, "AGENT SKILLS") {
+		t.Errorf("missing AGENT SKILLS marker in prompt")
+	}
+	if !strings.Contains(prompt, catalog) {
+		t.Errorf("missing skill catalog content in prompt")
+	}
+	if !strings.Contains(prompt, "Let's begin.") {
+		t.Errorf("footer dropped from prompt")
+	}
+
+	// and the skills section precedes the instructions section, which precedes the footer
+	skillsAt := strings.Index(prompt, "AGENT SKILLS")
+	instrAt := strings.Index(prompt, "USER & PROJECT INSTRUCTIONS")
+	footerAt := strings.Index(prompt, "Let's begin.")
+	if !(skillsAt < instrAt && instrAt < footerAt) {
+		t.Errorf("section order wrong: skills=%d instructions=%d footer=%d", skillsAt, instrAt, footerAt)
+	}
+}
+
+func TestBuildSystemPromptWithoutSkills(t *testing.T) {
+	// given a registry and a blank catalog
+	reg := tools.NewRegistry()
+	reg.Register(calculate.New())
+
+	// when building the prompt with no skills
+	prompt := BuildSystemPrompt(reg, "", "")
+
+	// then no skills section is emitted
+	if strings.Contains(prompt, "AGENT SKILLS") {
+		t.Errorf("unexpected AGENT SKILLS marker for empty catalog")
 	}
 }
