@@ -84,7 +84,7 @@ func ParseStep(output string) Step {
 }
 
 // findActionBlock extracts the model's final tool call, tolerating multi-line
-// arguments. It locates the last "Action: name(" opener, then scans forward
+// arguments. It finds every "Action: name(" opener, then scans forward
 // quote-aware for the matching ')': depth tracks '(' / ')' but characters inside a
 // double-quoted string (honoring \" escapes) are skipped, so parens within a JSON
 // value or shell command do not throw off the match. A surrounding code fence
@@ -92,27 +92,34 @@ func ParseStep(output string) Step {
 //
 // The "an Action is final" guard is preserved: after the closing ')' only
 // whitespace and an optional closing code fence may remain. If substantive prose
-// follows, the call is a documentation example rather than a live request, so we
-// return ok=false and let the caller's fallback (or the nudge) take over — exactly
-// what the single-line lastNonEmptyLine rule intended.
+// follows, the call is a documentation example rather than a live request.
+//
+// Openers are tried first-to-last, returning the first that satisfies the guard:
+//   - A documentation example that PRECEDES the real call fails the guard — the
+//     genuine action is substantive content trailing it — so it is skipped and the
+//     real call (later) is returned. "A trailing real call wins" still holds.
+//   - A line beginning with "Action:" that sits INSIDE an earlier action's quoted
+//     argument value (e.g. write_file content documenting this harness) is a bogus
+//     opener: actionOpenRe is line-anchored but NOT string-aware, so it matches.
+//     The genuine call is the *earlier* opener, and its quote-aware scan correctly
+//     consumes the embedded line as part of its argument and reaches the true end,
+//     so it passes the guard first — the bogus opener is never reached. Iterating
+//     last-to-first would fail here: a scan started mid-value has shifted string
+//     parity and can run to the real end, letting the bogus opener win.
 func findActionBlock(output string) (name, args string, ok bool) {
 	locs := actionOpenRe.FindAllStringSubmatchIndex(output, -1)
-	if locs == nil {
-		return "", "", false
+	for _, loc := range locs {
+		body, rest, found := scanBalancedArgs(output[loc[1]:])
+		if !found {
+			continue
+		}
+		// Only whitespace and an optional closing ``` fence may follow the call.
+		if leftover := strings.TrimSpace(rest); leftover != "" && leftover != "```" {
+			continue
+		}
+		return output[loc[2]:loc[3]], textutil.StripCodeFence(body), true
 	}
-	last := locs[len(locs)-1]
-	name = output[last[2]:last[3]] // tool-name capture group
-	body, rest, found := scanBalancedArgs(output[last[1]:])
-	if !found {
-		return "", "", false
-	}
-
-	// Only whitespace and an optional closing ``` fence may follow the call.
-	if leftover := strings.TrimSpace(rest); leftover != "" && leftover != "```" {
-		return "", "", false
-	}
-
-	return name, textutil.StripCodeFence(body), true
+	return "", "", false
 }
 
 // scanBalancedArgs scans s, which begins just after an Action's opening '(', for
