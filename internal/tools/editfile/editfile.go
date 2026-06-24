@@ -3,10 +3,11 @@
 package editfile
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
+
+	"klauscode/internal/tools/textutil"
 )
 
 // EditFileTool replaces a unique snippet of text in a file. Requiring the old
@@ -30,13 +31,14 @@ type editArgs struct {
 	New  string `json:"new"`
 }
 
-// Call decodes single-line JSON, then replaces the single occurrence of old with
-// new. It errors if old is missing or appears more than once so the model fixes
-// its input rather than making an ambiguous change.
+// Call decodes the JSON object argument (which may span multiple lines or be
+// fenced; textutil.DecodeJSONArgs normalizes both), then replaces the single
+// occurrence of old with new. It errors if old is missing or appears more than
+// once so the model fixes its input rather than making an ambiguous change.
 func (t *EditFileTool) Call(args string) (string, error) {
 	var a editArgs
-	if err := json.NewDecoder(strings.NewReader(args)).Decode(&a); err != nil {
-		return "", fmt.Errorf("edit_file: invalid JSON args: %w", err)
+	if err := textutil.DecodeJSONArgs(args, &a); err != nil {
+		return "", fmt.Errorf(`edit_file: invalid JSON args, expected {"path": str, "old": str, "new": str} on the Action line (escape newlines as \n): %w`, err)
 	}
 	if a.Path == "" {
 		return "", fmt.Errorf("edit_file: path is required")

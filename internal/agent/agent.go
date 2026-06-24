@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"klauscode/internal/llm"
 	"klauscode/internal/tools"
@@ -25,6 +26,12 @@ const defaultMaxSteps = 1000
 // Action nor a Final Answer, telling the model how to finish or how to call a
 // tool so it can self-correct on the next turn.
 const nudgeMessage = `Observation: No valid Action found. If the task is complete, write your reply on a line beginning with "Final Answer:". Otherwise respond with a single Action line as the last line of your turn.`
+
+// actionFormatNudge is used in place of nudgeMessage when a turn carries an
+// "Action:" token the parser could not honor (a malformed call). It teaches the
+// exact format — including the JSON-argument shape for write_file/edit_file — so
+// the model can self-correct rather than guess again at the generic nudge.
+const actionFormatNudge = `Observation: Your Action could not be parsed. Write the call as a single "Action: tool_name(arguments)" that is the LAST thing in your turn. For write_file/edit_file the argument is a JSON object, e.g. Action: write_file({"path": "file.txt", "content": "line one\nline two"}); the JSON may span multiple lines but newlines inside string values must be escaped as \n.`
 
 // Agent drives a single task to completion through the ReAct loop.
 type Agent struct {
@@ -124,7 +131,13 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 			continue
 		}
 
-		// The turn has no Action and no "Final Answer:" prefix.
+		// The turn has no Action and no "Final Answer:" prefix. If it nonetheless
+		// contains an "Action:" token, the model tried to call a tool but malformed
+		// it, so steer it with the format-specific nudge instead of the generic one.
+		nudge := nudgeMessage
+		if strings.Contains(output, "Action:") {
+			nudge = actionFormatNudge
+		}
 		prose := stripThoughtPrefix(output)
 
 		if prose == "" {
@@ -134,7 +147,7 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 			if candidateFinal != "" {
 				return candidateFinal, nil
 			}
-			messages = append(messages, llm.Message{Role: "user", Content: nudgeMessage})
+			messages = append(messages, llm.Message{Role: "user", Content: nudge})
 			continue
 		}
 
@@ -149,7 +162,7 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 		candidateFinal = prose
 		consecutiveMisses++
 		if consecutiveMisses == 1 {
-			messages = append(messages, llm.Message{Role: "user", Content: nudgeMessage})
+			messages = append(messages, llm.Message{Role: "user", Content: nudge})
 			continue
 		}
 		return prose, nil

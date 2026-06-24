@@ -84,7 +84,10 @@ disclosure** so the prompt stays small even with many installed:
   emphasis / extra spacing (`**Final Answer:**`, `final answer :`), anchored with
   multiline `^` so a mid-sentence mention in a Thought is not a false match. And
   in the loop (agent.go), a turn with neither an Action nor a Final Answer nudges
-  the model **once** (preserving malformed-action self-correction); a *second*
+  the model **once** (preserving malformed-action self-correction). The nudge is
+  format-specific: a turn that carries an `Action:` token the parser couldn't honor
+  gets `actionFormatNudge` (teaches the single-Action-line + JSON-arg shape)
+  instead of the generic `nudgeMessage`. A *second*
   consecutive miss returns that prose as the answer via `stripThoughtPrefix`,
   because in a ReAct loop a turn with no tool call is by definition the final
   response. This guarantees termination instead of spinning to the step limit.
@@ -92,21 +95,30 @@ disclosure** so the prompt stays small even with many installed:
   and never treats an **empty** turn as the answer: once a model has produced a
   complete prose reply, the empty turn it often emits in response to the nudge
   must not overwrite it (the symptom was an empty `--- final answer ---`).
-- **An Action is honored only on the model's final non-empty line.** `actionRe`
-  is anchored (`^Action:…$`) and `ParseStep` matches it against
-  `lastNonEmptyLine(output)` only. This stops the harness from executing an
-  `Action: …` that appears inside prose — e.g. a worked example the model writes
-  in backticks when it produces a final-answer-shaped turn *without* the
-  `Final Answer:` prefix. That bug ran the example literally (`bash(ls -R)` →
-  `sh: -c: syntax error near unexpected token ')'`). When neither a final answer
-  nor a final-line action is found, the loop nudges the model (agent.go) rather
-  than acting.
+- **An Action is honored only as the model's final, complete tool call.**
+  `ParseStep` tries `findActionBlock` first: it finds the **last** `Action: name(`
+  opener (multiline `^`), then scans forward **quote-aware** for the matching `)` —
+  depth tracks `(`/`)` but characters inside a double-quoted string (with `\"`
+  escapes) are skipped, so a multi-line / pretty-printed / fenced JSON arg, or
+  parens inside a value, parse cleanly. The **"action is final" guard** is kept:
+  only whitespace and an optional closing ```` ``` ```` fence may follow the `)`;
+  substantive prose after it means the call is a documentation example, so
+  `findActionBlock` declines. When it declines (e.g. an unterminated quote),
+  `ParseStep` falls back to the original anchored `actionRe` against
+  `lastNonEmptyLine(output)` — so no previously-passing case regresses. This dual
+  path stops the harness from executing an `Action: …` that appears inside prose
+  (the `bash(ls -R)` → `sh: -c: syntax error near unexpected token ')'` bug) while
+  newly tolerating how models actually format calls. When neither a final answer
+  nor an action is found, the loop nudges (agent.go) rather than acting.
 - **Tool argument styles.** Single-arg tools take the raw string inside the
-  parentheses (like `calculate`). Multi-arg tools (`write_file`, `edit_file`)
-  take a **single-line JSON object** decoded with a tolerant `json.Decoder`;
-  JSON escapes newlines as `\n`, so the existing single-line Action parser is
-  unchanged. The parser regex is single-line (no `(?s)`), so JSON content must
-  stay on one physical line.
+  parentheses (like `calculate`). Multi-arg tools (`write_file`, `edit_file`) take
+  a **JSON object** that the quote-aware parser accepts on one line **or across
+  several** and **optionally fenced**; the tools decode it via
+  `textutil.DecodeJSONArgs` (strips a surrounding code fence via
+  `textutil.StripCodeFence`, then a tolerant `json.Decoder` that ignores trailing
+  bytes). Newlines inside string values must still be escaped as `\n` (JSON forbids
+  raw newlines in strings). On a decode failure the tools return a **self-correcting**
+  error naming the exact expected object (e.g. `{"path": str, "content": str}`).
 - **Single-arg tool descriptions must NOT read like named params.** A signature
   such as `bash(command: str)` makes the model emit `bash(command: "ls -R")`;
   the harness then runs the literal word `command:` (`sh: command:: command not
