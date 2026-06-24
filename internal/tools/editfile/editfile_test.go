@@ -3,6 +3,7 @@ package editfile
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,52 @@ func TestEditFileCall(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if string(data) != "package main\nfunc renamed() {}\n" {
 		t.Errorf("file = %q", string(data))
+	}
+}
+
+func TestEditFileMultiLineAndFencedJSON(t *testing.T) {
+	// given JSON args in the multi-line and fenced shapes models commonly emit
+	tool := New()
+	tests := []struct {
+		name string
+		args string
+	}{
+		{"multi-line", "{\n  \"path\": \"%s\",\n  \"old\": \"old\",\n  \"new\": \"new\"\n}"},
+		{"json fence", "```json\n{\"path\": \"%s\", \"old\": \"old\", \"new\": \"new\"}\n```"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeTemp(t, "value is old here")
+			args := strings.Replace(tt.args, "%s", path, 1)
+
+			// when called
+			if _, err := tool.Call(args); err != nil {
+				t.Fatalf("Call returned error: %v", err)
+			}
+
+			// then the edit is applied despite the multi-line / fenced wrapper
+			data, _ := os.ReadFile(path)
+			if string(data) != "value is new here" {
+				t.Errorf("file = %q, want %q", string(data), "value is new here")
+			}
+		})
+	}
+}
+
+func TestEditFileInvalidJSON(t *testing.T) {
+	// given malformed JSON args
+	tool := New()
+
+	// when called
+	_, err := tool.Call(`{"path": "x", "old":}`)
+
+	// then a descriptive, self-correcting error names the expected object shape
+	if err == nil {
+		t.Fatal("expected error for invalid JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), `{"path": str, "old": str, "new": str}`) {
+		t.Errorf("error should teach the expected shape, got %v", err)
 	}
 }
 

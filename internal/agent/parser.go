@@ -3,6 +3,8 @@ package agent
 import (
 	"regexp"
 	"strings"
+
+	"klauscode/internal/tools/textutil"
 )
 
 // Step is the parsed result of a single model turn. A turn either ends the run
@@ -31,6 +33,13 @@ var (
 	// full line (^…$) so an "Action: …" that merely appears inside prose — e.g.
 	// a documentation example the model writes in backticks — cannot match.
 	actionRe = regexp.MustCompile(`^Action:\s*([A-Za-z_]\w*)\s*\((.*)\)\s*$`)
+	// actionOpenRe matches the start of an Action up to its opening parenthesis,
+	// capturing the tool name. Unlike actionRe it does NOT anchor the closing
+	// paren to the same line, so the argument may span multiple physical lines
+	// (pretty-printed or fenced JSON, a heredoc). The multiline `^` lets it find an
+	// opener anywhere; findActionBlock scans for the LAST one so a trailing real
+	// call wins over an earlier documentation example.
+	actionOpenRe = regexp.MustCompile(`(?m)^\s*Action:\s*([A-Za-z_]\w*)\s*\(`)
 )
 
 // ParseStep extracts the action and/or final answer from a model turn.
@@ -51,6 +60,18 @@ func ParseStep(output string) Step {
 		return step
 	}
 
+	// Prefer the multi-line, quote- and fence-aware extractor: it parses how models
+	// actually format tool calls (pretty-printed JSON, a ```json fence, parens
+	// inside string values). It only succeeds on a clean, final action, so when it
+	// declines we fall back to the original single-line last-line match unchanged —
+	// no previously-passing case regresses.
+	if name, args, ok := findActionBlock(output); ok {
+		step.HasAction = true
+		step.ToolName = name
+		step.ToolArgs = normalizeArgs(args)
+		return step
+	}
+
 	if last := lastNonEmptyLine(output); last != "" {
 		if m := actionRe.FindStringSubmatch(last); m != nil {
 			step.HasAction = true
@@ -62,10 +83,79 @@ func ParseStep(output string) Step {
 	return step
 }
 
+// findActionBlock extracts the model's final tool call, tolerating multi-line
+// arguments. It locates the last "Action: name(" opener, then scans forward
+// quote-aware for the matching ')': depth tracks '(' / ')' but characters inside a
+// double-quoted string (honoring \" escapes) are skipped, so parens within a JSON
+// value or shell command do not throw off the match. A surrounding code fence
+// around the arguments is stripped.
+//
+// The "an Action is final" guard is preserved: after the closing ')' only
+// whitespace and an optional closing code fence may remain. If substantive prose
+// follows, the call is a documentation example rather than a live request, so we
+// return ok=false and let the caller's fallback (or the nudge) take over — exactly
+// what the single-line lastNonEmptyLine rule intended.
+func findActionBlock(output string) (name, args string, ok bool) {
+	locs := actionOpenRe.FindAllStringSubmatchIndex(output, -1)
+	if locs == nil {
+		return "", "", false
+	}
+	last := locs[len(locs)-1]
+	name = output[last[2]:last[3]] // tool-name capture group
+	body, rest, found := scanBalancedArgs(output[last[1]:])
+	if !found {
+		return "", "", false
+	}
+
+	// Only whitespace and an optional closing ``` fence may follow the call.
+	if leftover := strings.TrimSpace(rest); leftover != "" && leftover != "```" {
+		return "", "", false
+	}
+
+	return name, textutil.StripCodeFence(body), true
+}
+
+// scanBalancedArgs scans s, which begins just after an Action's opening '(', for
+// the matching closing ')'. It is quote-aware: a '(' or ')' inside a double-quoted
+// string (with \" escapes) does not change depth, so parens inside argument values
+// are ignored. It returns the argument text between the parens and the remainder
+// of s after the closing ')'. found is false when no balancing ')' exists (e.g. an
+// unterminated string), so the caller can fall back to the single-line parser.
+func scanBalancedArgs(s string) (args, rest string, found bool) {
+	depth := 1
+	inStr := false
+	esc := false
+	for i, r := range s {
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case r == '\\':
+				esc = true
+			case r == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch r {
+		case '"':
+			inStr = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return s[:i], s[i+1:], true
+			}
+		}
+	}
+	return "", "", false
+}
+
 // lastNonEmptyLine returns the last line of s that has non-whitespace content,
-// trimmed of surrounding whitespace. It returns "" when s is empty or blank.
-// Actions are always a single physical line (JSON args escape newlines as \n),
-// so the final non-empty line is where a live tool call must appear.
+// trimmed of surrounding whitespace. It returns "" when s is empty or blank. It
+// backs the fallback single-line Action match used when findActionBlock declines
+// (e.g. an unterminated quote), where a live tool call sits on the final line.
 func lastNonEmptyLine(s string) string {
 	lines := strings.Split(s, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {

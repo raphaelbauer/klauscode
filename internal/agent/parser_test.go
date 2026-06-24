@@ -1,6 +1,9 @@
 package agent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseStepAction(t *testing.T) {
 	// given a turn containing a thought and an action
@@ -97,6 +100,129 @@ func TestParseStepJSONArgsWithParen(t *testing.T) {
 	}
 	if step.ToolArgs != `{"path":"a","content":"x)y"}` {
 		t.Errorf("ToolArgs = %q, want %q", step.ToolArgs, `{"path":"a","content":"x)y"}`)
+	}
+}
+
+func TestParseStepMultiLineJSONAction(t *testing.T) {
+	// given a write_file action whose JSON argument is pretty-printed across
+	// several physical lines — the #1 real-world failure mode of the single-line
+	// parser, which only saw the trailing "})" fragment
+	output := "Thought: I'll create the file.\n" +
+		"Action: write_file({\n" +
+		`  "path": "hello.txt",` + "\n" +
+		`  "content": "hi there"` + "\n" +
+		"})"
+
+	// when parsed
+	step := ParseStep(output)
+
+	// then the whole multi-line JSON object is captured as the action's args
+	if !step.HasAction || step.ToolName != "write_file" {
+		t.Fatalf("expected write_file action, got %+v", step)
+	}
+	want := "{\n  \"path\": \"hello.txt\",\n  \"content\": \"hi there\"\n}"
+	if step.ToolArgs != want {
+		t.Errorf("ToolArgs = %q, want %q", step.ToolArgs, want)
+	}
+}
+
+func TestParseStepFencedJSONAction(t *testing.T) {
+	// given a write_file action whose JSON argument is wrapped in a ```json fence,
+	// the way many models emit structured arguments
+	output := "Action: write_file(```json\n" +
+		`{"path": "a.txt", "content": "hi"}` + "\n" +
+		"```)"
+
+	// when parsed
+	step := ParseStep(output)
+
+	// then the surrounding fence is stripped, leaving clean JSON args
+	if !step.HasAction || step.ToolName != "write_file" {
+		t.Fatalf("expected write_file action, got %+v", step)
+	}
+	if step.ToolArgs != `{"path": "a.txt", "content": "hi"}` {
+		t.Errorf("ToolArgs = %q, want clean JSON", step.ToolArgs)
+	}
+}
+
+func TestParseStepParensInJSONValueAcrossLines(t *testing.T) {
+	// given a multi-line JSON action whose string value contains '(' and ')'
+	// characters — the quote-aware scan must not treat them as paren depth
+	output := "Action: write_file({\n" +
+		`  "path": "main.go",` + "\n" +
+		`  "content": "f(x) := (a) + (b)"` + "\n" +
+		"})"
+
+	// when parsed
+	step := ParseStep(output)
+
+	// then the closing paren of the value is ignored and the true call paren wins
+	if !step.HasAction || step.ToolName != "write_file" {
+		t.Fatalf("expected write_file action, got %+v", step)
+	}
+	if !strings.Contains(step.ToolArgs, `"content": "f(x) := (a) + (b)"`) {
+		t.Errorf("ToolArgs lost paren-containing value: %q", step.ToolArgs)
+	}
+}
+
+func TestParseStepMultiLineSingleArgAction(t *testing.T) {
+	// given a single-arg bash action spanning multiple lines (a heredoc) — today's
+	// single-line parser fails this; the generic extractor now handles it. This is
+	// a deliberate, beneficial behavior change, pinned here so it stays intentional.
+	output := "Thought: write a file via a heredoc.\n" +
+		"Action: bash(cat <<EOF\n" +
+		"hello\n" +
+		"world\n" +
+		"EOF\n" +
+		")"
+
+	// when parsed
+	step := ParseStep(output)
+
+	// then the full multi-line command is the action's argument
+	if !step.HasAction || step.ToolName != "bash" {
+		t.Fatalf("expected bash action, got %+v", step)
+	}
+	if step.ToolArgs != "cat <<EOF\nhello\nworld\nEOF" {
+		t.Errorf("ToolArgs = %q, want the multi-line heredoc command", step.ToolArgs)
+	}
+}
+
+func TestParseStepMultiLineJSONNotFalseFinal(t *testing.T) {
+	// given a multi-line write_file action whose content value contains the literal
+	// text "Final Answer:" (escaped, since JSON strings can't hold a raw newline).
+	// finalRe runs before findActionBlock; its multiline `^` must not match the
+	// label inside the escaped value.
+	output := "Action: write_file({\n" +
+		`  "path": "notes.txt",` + "\n" +
+		`  "content": "Summary.\nFinal Answer: see the file"` + "\n" +
+		"})"
+
+	// when parsed
+	step := ParseStep(output)
+
+	// then it is treated as an action, not a final answer
+	if step.HasFinal {
+		t.Fatalf("expected action, not a final answer, got %+v", step)
+	}
+	if !step.HasAction || step.ToolName != "write_file" {
+		t.Errorf("expected write_file action, got %+v", step)
+	}
+}
+
+func TestParseStepSingleLineJSONStillParses(t *testing.T) {
+	// given the original single-line JSON form (regression guard)
+	output := `Action: write_file({"path":"a","content":"x"})`
+
+	// when parsed
+	step := ParseStep(output)
+
+	// then it still parses exactly as before
+	if !step.HasAction || step.ToolName != "write_file" {
+		t.Fatalf("expected write_file action, got %+v", step)
+	}
+	if step.ToolArgs != `{"path":"a","content":"x"}` {
+		t.Errorf("ToolArgs = %q", step.ToolArgs)
 	}
 }
 

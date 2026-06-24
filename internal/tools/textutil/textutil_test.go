@@ -51,6 +51,61 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONArgs(t *testing.T) {
+	type args struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	tests := []struct {
+		name        string
+		in          string
+		wantPath    string
+		wantContent string
+	}{
+		{"single line", `{"path":"a.txt","content":"hi"}`, "a.txt", "hi"},
+		{"multi-line", "{\n  \"path\": \"a.txt\",\n  \"content\": \"hi\"\n}", "a.txt", "hi"},
+		{"json fence", "```json\n{\"path\":\"a.txt\",\"content\":\"hi\"}\n```", "a.txt", "hi"},
+		{"bare fence", "```\n{\"path\":\"a.txt\",\"content\":\"hi\"}\n```", "a.txt", "hi"},
+		{"inline backticks", "`{\"path\":\"a.txt\",\"content\":\"hi\"}`", "a.txt", "hi"},
+		{"trailing bytes tolerated", `{"path":"a.txt","content":"hi"} `, "a.txt", "hi"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// given JSON args in one of the shapes models emit
+			var a args
+
+			// when decoded
+			if err := DecodeJSONArgs(tt.in, &a); err != nil {
+				t.Fatalf("DecodeJSONArgs(%q) error: %v", tt.in, err)
+			}
+
+			// then the fence/whitespace is normalized away and fields are populated
+			if a.Path != tt.wantPath || a.Content != tt.wantContent {
+				t.Errorf("got {%q, %q}, want {%q, %q}", a.Path, a.Content, tt.wantPath, tt.wantContent)
+			}
+		})
+	}
+}
+
+func TestDecodeJSONArgsMalformed(t *testing.T) {
+	// given malformed JSON args
+	var a struct {
+		Path string `json:"path"`
+	}
+
+	// when decoded
+	err := DecodeJSONArgs(`{"path":}`, &a)
+
+	// then a descriptive error is returned for the caller to wrap
+	if err == nil {
+		t.Fatal("expected error for malformed JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "JSON") {
+		t.Errorf("error = %v, want it to mention JSON", err)
+	}
+}
+
 func TestWrapUntrustedHasMatchingNonce(t *testing.T) {
 	// given a benign body
 	out := WrapUntrusted("just some page text")

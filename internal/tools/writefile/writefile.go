@@ -3,11 +3,11 @@
 package writefile
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"klauscode/internal/tools/textutil"
 )
 
 // WriteFileTool creates or overwrites a file with content supplied by the model.
@@ -28,15 +28,14 @@ type writeArgs struct {
 	Content string `json:"content"`
 }
 
-// Call decodes a single-line JSON object and writes content to path, creating
-// parent directories as needed. JSON keeps multi-line content on one physical
-// line (newlines escaped as \n) so the single-line Action parser still works.
+// Call decodes the JSON object argument and writes content to path, creating
+// parent directories as needed. The JSON may span multiple lines or be fenced
+// (textutil.DecodeJSONArgs normalizes both); newlines inside content are escaped
+// as \n by the model and unescaped on decode.
 func (t *WriteFileTool) Call(args string) (string, error) {
 	var a writeArgs
-	// A Decoder stops at the end of the first JSON value, tolerating any stray
-	// trailing characters the Action line might carry.
-	if err := json.NewDecoder(strings.NewReader(args)).Decode(&a); err != nil {
-		return "", fmt.Errorf("write_file: invalid JSON args: %w", err)
+	if err := textutil.DecodeJSONArgs(args, &a); err != nil {
+		return "", fmt.Errorf(`write_file: invalid JSON args, expected {"path": str, "content": str} on the Action line (escape newlines in content as \n): %w`, err)
 	}
 	if a.Path == "" {
 		return "", fmt.Errorf("write_file: path is required")

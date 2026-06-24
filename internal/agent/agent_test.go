@@ -187,6 +187,37 @@ func TestAgentRunEmptyTurnDoesNotDiscardProseAnswer(t *testing.T) {
 	}
 }
 
+func TestAgentRunMalformedActionGetsFormatNudge(t *testing.T) {
+	// given a turn that carries an "Action:" token but malforms the call (an
+	// unterminated write_file with no closing paren), then recovers
+	client := &scriptedClient{replies: []string{
+		"Thought: writing the file.\nAction: write_file(\nI forgot to close the call.",
+		"Final Answer: done",
+	}}
+	ag := newTestAgent(client)
+
+	// when the agent runs
+	answer, err := ag.Run(context.Background(), "create a file")
+
+	// then it finishes, and the nudge fed back was the format-specific one
+	// (teaching the JSON-argument shape) rather than the generic message
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if answer != "done" {
+		t.Errorf("answer = %q, want %q", answer, "done")
+	}
+	var sawFormatNudge bool
+	for _, m := range client.lastMsg {
+		if strings.Contains(m.Content, `write_file({"path"`) {
+			sawFormatNudge = true
+		}
+	}
+	if !sawFormatNudge {
+		t.Errorf("expected the format-specific nudge in messages, got %+v", client.lastMsg)
+	}
+}
+
 func TestAgentRunStepLimit(t *testing.T) {
 	// given a model that never produces a final answer
 	client := &scriptedClient{replies: []string{
