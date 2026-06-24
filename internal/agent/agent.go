@@ -131,15 +131,26 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 			continue
 		}
 
-		// The turn has no Action and no "Final Answer:" prefix. If it nonetheless
-		// contains an "Action:" token, the model tried to call a tool but malformed
-		// it, so steer it with the format-specific nudge instead of the generic one.
-		nudge := nudgeMessage
-		if strings.Contains(output, "Action:") {
-			nudge = actionFormatNudge
-		}
-		prose := stripThoughtPrefix(output)
+		// The turn has neither a parseable Action nor a Final Answer. Two cases:
 
+		// (a) It carries an "Action:" token, so the model tried to call a tool but
+		// malformed it. That is never a final answer — returning the raw "Action: …"
+		// text to the user would be wrong — so always steer it with the
+		// format-specific nudge and let it retry, without touching candidateFinal
+		// (else a following empty turn could resurface the malformed scaffolding).
+		// The maxSteps backstop stops a model that can never get the format right.
+		if strings.Contains(output, "Action:") {
+			messages = append(messages, llm.Message{Role: "user", Content: actionFormatNudge})
+			continue
+		}
+
+		// (b) No "Action:" token: the model is addressing the user, not calling a
+		// tool. In a ReAct loop a turn with no tool call is the final response
+		// (small models routinely omit the "Final Answer:" prefix). Nudge once to
+		// give a malformed answer a chance to reformat — remembering the prose so a
+		// follow-up empty turn cannot lose it — and return it on the second
+		// consecutive miss instead of looping to the step limit.
+		prose := stripThoughtPrefix(output)
 		if prose == "" {
 			// An empty turn carries no answer. If the model already produced a
 			// substantive prose reply on an earlier turn, return that rather than
@@ -147,22 +158,13 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 			if candidateFinal != "" {
 				return candidateFinal, nil
 			}
-			messages = append(messages, llm.Message{Role: "user", Content: nudge})
+			messages = append(messages, llm.Message{Role: "user", Content: nudgeMessage})
 			continue
 		}
-
-		// Substantive prose with no tool call. The first time, nudge the model
-		// toward the format — it may have malformed an action it meant to call, so
-		// the nudge gives it one chance to self-correct — but remember the prose so
-		// a follow-up empty turn cannot lose it. A second consecutive miss means
-		// the model has stopped requesting tools and is just talking to the user:
-		// in a ReAct loop a turn with no tool call is, by definition, the final
-		// response (small models routinely omit the "Final Answer:" prefix), so we
-		// return that prose instead of looping to the step limit.
 		candidateFinal = prose
 		consecutiveMisses++
 		if consecutiveMisses == 1 {
-			messages = append(messages, llm.Message{Role: "user", Content: nudge})
+			messages = append(messages, llm.Message{Role: "user", Content: nudgeMessage})
 			continue
 		}
 		return prose, nil
