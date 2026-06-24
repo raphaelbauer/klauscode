@@ -51,15 +51,21 @@ NOTES:
 Let's begin.`
 
 // BuildSystemPrompt renders the system prompt, listing the registered tools so
-// adding a tool automatically updates the instructions the model sees. Any
-// user/project instructions (see LoadInstructions) are injected between the tool
-// list and the footer so the footer's format rules and "Let's begin." stay last.
-func BuildSystemPrompt(reg *tools.Registry, instructions string) string {
+// adding a tool automatically updates the instructions the model sees. An
+// optional Agent Skills catalog (see skills.Catalog) and any user/project
+// instructions (see LoadInstructions) are injected between the tool list and the
+// footer so the footer's format rules and "Let's begin." stay last.
+func BuildSystemPrompt(reg *tools.Registry, skillsCatalog, instructions string) string {
 	var b strings.Builder
 	b.WriteString(promptHeader)
 	for _, t := range reg.List() {
 		b.WriteString("- ")
 		b.WriteString(t.Description())
+		b.WriteString("\n")
+	}
+	if s := strings.TrimSpace(skillsCatalog); s != "" {
+		b.WriteString("\nAGENT SKILLS — capabilities you can load on demand. To use one, call skill(<name>) to read its full instructions, then follow them:\n")
+		b.WriteString(s)
 		b.WriteString("\n")
 	}
 	if s := strings.TrimSpace(instructions); s != "" {

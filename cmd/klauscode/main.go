@@ -17,11 +17,13 @@ import (
 
 	"klauscode/internal/agent"
 	"klauscode/internal/llm"
+	"klauscode/internal/skills"
 	"klauscode/internal/tools"
 	"klauscode/internal/tools/bash"
 	"klauscode/internal/tools/calculate"
 	"klauscode/internal/tools/editfile"
 	"klauscode/internal/tools/readfile"
+	"klauscode/internal/tools/skill"
 	"klauscode/internal/tools/webfetch"
 	"klauscode/internal/tools/websearch"
 	"klauscode/internal/tools/writefile"
@@ -89,9 +91,20 @@ func run() error {
 		return err
 	}
 
+	// Discover Agent Skills: global ~/.claude/skills/<name>/SKILL.md and project
+	// ./.claude/skills/<name>/SKILL.md. The skill tool serves their bodies on
+	// demand; the catalog lists name+description in the prompt. Project skills
+	// override global ones by name.
+	discovered, err := skills.Discover(globalDir, ".claude")
+	if err != nil {
+		return err
+	}
+	registry.Register(skill.New(discovered))
+
 	ag := agent.New(client, registry,
 		agent.WithTrace(os.Stderr),
-		agent.WithInstructions(instructions))
+		agent.WithInstructions(instructions),
+		agent.WithSkills(skills.Catalog(discovered)))
 
 	answer, err := ag.Run(context.Background(), task)
 	if err != nil {

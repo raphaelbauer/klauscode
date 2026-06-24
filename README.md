@@ -153,6 +153,44 @@ echo 'Always run `go test ./...` before claiming a task is done.' > AGENTS.md
 go run ./cmd/klauscode "Add a helper and a test for it"
 ```
 
+### Agent Skills (SKILL.md)
+
+Skills are named, reusable capability packets the model loads **on demand**.
+Unlike instructions (which are always injected), only each skill's name and
+one-line description appear in the prompt; the model pulls in a skill's full
+instructions by calling `skill(<name>)` when it decides the skill is relevant.
+This keeps the prompt small even with many skills installed.
+
+Skills live one per folder, in the same two scopes as instructions:
+
+| Scope     | Location                              |
+| --------- | ------------------------------------- |
+| Global    | `~/.claude/skills/<name>/SKILL.md`     |
+| Project   | `./.claude/skills/<name>/SKILL.md`     |
+
+A project skill overrides a global one with the same name. Each `SKILL.md` is a
+markdown file with minimal frontmatter — `name` and `description` — followed by
+the instructions body (which may point the model at other files in the skill's
+folder; it reads them with `read_file`):
+
+```sh
+mkdir -p .claude/skills/greet
+cat > .claude/skills/greet/SKILL.md <<'EOF'
+---
+name: greet
+description: Greet a person enthusiastically by name.
+---
+When asked to greet someone, reply with: "HELLO <name>!!! Great to see you."
+EOF
+
+go run ./cmd/klauscode "Use your greet skill to greet Sam"
+# The trace shows an Action: skill(greet) turn, then a final answer that follows
+# the skill's instructions.
+```
+
+Skill files are local and user-authored, so their contents are **trusted** (the
+same trust class as `AGENTS.md`/`CLAUDE.md`), unlike untrusted web content.
+
 ### Local OpenAI-compatible servers (e.g. LM Studio)
 
 Point `OPENAI_BASE_URL` at the server's `/v1` base and set `OPENAI_MODEL` to a
