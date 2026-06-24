@@ -8,6 +8,7 @@ import (
 	"klauscode/internal/llm"
 	"klauscode/internal/tools"
 	"klauscode/internal/tools/calculate"
+	"klauscode/internal/tools/writefile"
 )
 
 // scriptedClient returns a queued reply per call and records the messages it
@@ -28,6 +29,7 @@ func (s *scriptedClient) Complete(_ context.Context, messages []llm.Message, _ [
 func newTestAgent(client llm.Client, opts ...Option) *Agent {
 	reg := tools.NewRegistry()
 	reg.Register(calculate.New())
+	reg.Register(writefile.New())
 	return New(client, reg, opts...)
 }
 
@@ -215,6 +217,35 @@ func TestAgentRunMalformedActionGetsFormatNudge(t *testing.T) {
 	}
 	if !sawFormatNudge {
 		t.Errorf("expected the format-specific nudge in messages, got %+v", client.lastMsg)
+	}
+}
+
+func TestAgentRunMalformedActionOnSecondMissDoesNotBecomeAnswer(t *testing.T) {
+	// given two malformed write_file turns in a row (the 2nd has no closing
+	// paren — "}}" instead of "})"), then a clean final answer
+	client := &scriptedClient{replies: []string{
+		"Thought: attempt one.\nAction: write_file({\n  \"path\": \"p\",\n  \"content\": \"x\"\n})\nstray prose breaks the guard",
+		"Thought: attempt two.\nAction: write_file({\"path\": \"p\", \"content\": \"x\"}}",
+		"Final Answer: wrote it",
+	}}
+	ag := newTestAgent(client)
+
+	// when the agent runs
+	answer, err := ag.Run(context.Background(), "write a file")
+
+	// then the malformed action is NOT returned as the answer; the model is
+	// nudged again and its real final answer is returned
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if strings.Contains(answer, "Action:") || strings.Contains(answer, "write_file") {
+		t.Errorf("malformed action leaked into the answer: %q", answer)
+	}
+	if answer != "wrote it" {
+		t.Errorf("answer = %q, want %q", answer, "wrote it")
+	}
+	if client.calls != 3 {
+		t.Errorf("expected 3 model calls, got %d", client.calls)
 	}
 }
 
