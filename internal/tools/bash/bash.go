@@ -23,7 +23,7 @@ const (
 	// run forever.
 	defaultTimeout = 30 * time.Second
 	// maxOutput caps combined stdout+stderr fed back to the model.
-	maxOutput = 16 * 1024
+	maxOutput = 160 * 1024
 )
 
 // BashTool runs shell commands via `sh -c`.

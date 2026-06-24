@@ -15,7 +15,7 @@ import (
 const (
 	userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 	// maxBytes caps the page text returned to the model.
-	maxBytes = 16 * 1024
+	maxBytes = 128 * 1024
 )
 
 // WebFetchTool fetches a URL and strips it to text.
