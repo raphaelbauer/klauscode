@@ -131,6 +131,28 @@ GOOS=linux GOARCH=amd64 go build -o klauscode-linux ./cmd/klauscode
 \* Required only for the public OpenAI API. When `OPENAI_BASE_URL` points at a
 local server, the key is optional (a placeholder is used).
 
+### Instructions files (AGENTS.md / CLAUDE.md)
+
+You can give klauscode standing guidance — build commands, conventions,
+constraints — without touching the code. On startup it loads two optional files
+and injects them into the system prompt:
+
+| Scope     | Location                  | Tried in order        |
+| --------- | ------------------------- | --------------------- |
+| Global    | `~/.claude/`              | `AGENTS.md`, `CLAUDE.md` |
+| Project   | the working directory     | `AGENTS.md`, `CLAUDE.md` |
+
+For each scope the first file found wins (`AGENTS.md` is the cross-tool
+[agents.md](https://agents.md/) convention; `CLAUDE.md` is the fallback). When
+both scopes have a file, both are included — global first, then project — and
+project instructions take precedence on conflict. Missing files are fine; full
+contents are injected with no truncation.
+
+```sh
+echo 'Always run `go test ./...` before claiming a task is done.' > AGENTS.md
+go run ./cmd/klauscode "Add a helper and a test for it"
+```
+
 ### Local OpenAI-compatible servers (e.g. LM Studio)
 
 Point `OPENAI_BASE_URL` at the server's `/v1` base and set `OPENAI_MODEL` to a

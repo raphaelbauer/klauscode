@@ -31,6 +31,28 @@ func newTestAgent(client llm.Client, opts ...Option) *Agent {
 	return New(client, reg, opts...)
 }
 
+func TestAgentWithInstructionsReachesSystemPrompt(t *testing.T) {
+	// given an agent built with user/project instructions
+	client := &scriptedClient{replies: []string{"Final Answer: done"}}
+	ag := newTestAgent(client, WithInstructions("always answer in French"))
+
+	// when it runs (options are applied before the system prompt is built)
+	if _, err := ag.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	// then the system message carries the injected instructions
+	var sawInstructions bool
+	for _, m := range client.lastMsg {
+		if m.Role == "system" && strings.Contains(m.Content, "always answer in French") {
+			sawInstructions = true
+		}
+	}
+	if !sawInstructions {
+		t.Error("instructions were not injected into the system prompt")
+	}
+}
+
 func TestAgentRunHappyPath(t *testing.T) {
 	// given a model that asks for a calculation, then answers
 	client := &scriptedClient{replies: []string{

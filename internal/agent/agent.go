@@ -19,7 +19,7 @@ const observationStop = "Observation:"
 // defaultMaxSteps bounds the loop so a confused model cannot run forever. Coding
 // workflows (read → edit → run tests → re-edit) take more turns than a one-shot
 // calculation, so the default is generous; the limit still backstops a runaway.
-const defaultMaxSteps = 25
+const defaultMaxSteps = 1000
 
 // nudgeMessage is fed back as an observation when a turn carries neither a valid
 // Action nor a Final Answer, telling the model how to finish or how to call a
@@ -28,11 +28,12 @@ const nudgeMessage = `Observation: No valid Action found. If the task is complet
 
 // Agent drives a single task to completion through the ReAct loop.
 type Agent struct {
-	client   llm.Client
-	tools    *tools.Registry
-	system   string
-	maxSteps int
-	trace    io.Writer // optional; receives each turn for visibility
+	client       llm.Client
+	tools        *tools.Registry
+	system       string
+	instructions string // optional user/project instructions injected into the prompt
+	maxSteps     int
+	trace        io.Writer // optional; receives each turn for visibility
 }
 
 // Option configures an Agent.
@@ -52,18 +53,25 @@ func WithTrace(w io.Writer) Option {
 	return func(a *Agent) { a.trace = w }
 }
 
+// WithInstructions injects user/project instructions (e.g. from AGENTS.md /
+// CLAUDE.md, see LoadInstructions) into the system prompt.
+func WithInstructions(s string) Option {
+	return func(a *Agent) { a.instructions = s }
+}
+
 // New builds an Agent. The system prompt is rendered from the registry so it
-// always reflects the tools actually available.
+// always reflects the tools actually available; it is built after options are
+// applied so WithInstructions can feed it.
 func New(client llm.Client, reg *tools.Registry, opts ...Option) *Agent {
 	a := &Agent{
 		client:   client,
 		tools:    reg,
-		system:   BuildSystemPrompt(reg),
 		maxSteps: defaultMaxSteps,
 	}
 	for _, opt := range opts {
 		opt(a)
 	}
+	a.system = BuildSystemPrompt(reg, a.instructions)
 	return a
 }
 
