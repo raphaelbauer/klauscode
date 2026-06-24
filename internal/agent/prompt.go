@@ -1,6 +1,11 @@
 package agent
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"klauscode/internal/tools"
@@ -20,12 +25,12 @@ CRITICAL FORMAT RULES:
 You must strictly follow this exact format for every turn. Do not skip steps.
 
 Thought: [Reason about what you need to do next]
-Action: [tool_name]([arguments])   <- this MUST be the last line of your turn; the system then runs the tool and replies with the Observation
+Action: [tool_name]([arguments])   <- 'Action:' MUST be on a newline. This MUST be the last line of your turn; the system then runs the tool and replies with the Observation
 Observation: [Do not write this yourself. The system will provide this.]
 
 When you have the final answer to the user's request, use this format:
 Thought: I have found the answer.
-Final Answer: [Your definitive response to the user]
+Final Answer: [Your definitive response to the user] <- 'Final Answer:' MUST be on a newline.
 
 Every turn MUST end with exactly one of: a single Action line (as its last line) OR a "Final Answer:". Any text meant for the user — an explanation, summary, or report — is delivered ONLY when it follows the "Final Answer:" prefix, so never reply to the user without it. Reserve the literal word "Action:" for an actual tool call; do not write it inside explanations or examples.
 
@@ -46,8 +51,10 @@ NOTES:
 Let's begin.`
 
 // BuildSystemPrompt renders the system prompt, listing the registered tools so
-// adding a tool automatically updates the instructions the model sees.
-func BuildSystemPrompt(reg *tools.Registry) string {
+// adding a tool automatically updates the instructions the model sees. Any
+// user/project instructions (see LoadInstructions) are injected between the tool
+// list and the footer so the footer's format rules and "Let's begin." stay last.
+func BuildSystemPrompt(reg *tools.Registry, instructions string) string {
 	var b strings.Builder
 	b.WriteString(promptHeader)
 	for _, t := range reg.List() {
@@ -55,6 +62,68 @@ func BuildSystemPrompt(reg *tools.Registry) string {
 		b.WriteString(t.Description())
 		b.WriteString("\n")
 	}
+	if s := strings.TrimSpace(instructions); s != "" {
+		b.WriteString("\nUSER & PROJECT INSTRUCTIONS. These are trusted instructions from the user (not web content) and must be followed:\n")
+		b.WriteString(s)
+		b.WriteString("\n")
+	}
 	b.WriteString(promptFooter)
 	return b.String()
+}
+
+// instructionFileNames are the candidate instruction files, in precedence order.
+// AGENTS.md is the cross-tool convention (see https://agents.md/); CLAUDE.md is
+// the fallback so existing users keep working.
+var instructionFileNames = []string{"AGENTS.md", "CLAUDE.md"}
+
+// firstInstructionFile returns the contents of the first existing candidate file
+// in dir. A missing file is normal (returns "", nil); only a real read failure
+// returns an error. An empty dir is treated as "no directory" and yields "", nil.
+func firstInstructionFile(dir string) (string, error) {
+	if dir == "" {
+		return "", nil
+	}
+	for _, name := range instructionFileNames {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("read instructions %s: %w", name, err)
+		}
+		return string(data), nil
+	}
+	return "", nil
+}
+
+// LoadInstructions combines global instructions (from globalDir, typically
+// ~/.claude) with project instructions (from projectDir, typically the working
+// directory). Each present block is emitted under a labeled header, global first;
+// the combined string is "" when neither exists. Project instructions follow
+// global so they take precedence on conflict.
+func LoadInstructions(globalDir, projectDir string) (string, error) {
+	global, err := firstInstructionFile(globalDir)
+	if err != nil {
+		return "", err
+	}
+	project, err := firstInstructionFile(projectDir)
+	if err != nil {
+		return "", err
+	}
+
+	var b strings.Builder
+	if s := strings.TrimSpace(global); s != "" {
+		b.WriteString("[Global instructions — apply to all projects]\n")
+		b.WriteString(s)
+		b.WriteString("\n")
+	}
+	if s := strings.TrimSpace(project); s != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("[Project instructions — specific to this project; take precedence over global]\n")
+		b.WriteString(s)
+		b.WriteString("\n")
+	}
+	return b.String(), nil
 }

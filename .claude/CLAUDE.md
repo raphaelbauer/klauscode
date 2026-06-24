@@ -18,11 +18,29 @@ Layered with interface-based DI; `cmd/klauscode` is the composition root.
   Each tool package mirrors `calculate`: a struct, a `New()` constructor, and the
   three `Tool` methods; structural typing means none of them import `tools`.
 - `internal/agent` — the ReAct loop (`agent.go`), the system prompt builder
-  (`prompt.go`, renders the tool list from the registry), and the turn parser
-  (`parser.go`).
+  (`prompt.go`, renders the tool list from the registry **and injects optional
+  user/project instructions** via `LoadInstructions`/`WithInstructions`), and the
+  turn parser (`parser.go`).
 - `cmd/klauscode` — reads `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL`,
   wires, runs. When `OPENAI_BASE_URL` is set, the API key is optional (a
-  placeholder is used) so local OpenAI-compatible servers work without a key.
+  placeholder is used) so local OpenAI-compatible servers work without a key. It
+  also resolves `~/.claude` + the cwd and feeds `agent.LoadInstructions` into
+  `agent.WithInstructions`.
+
+## Instructions files (AGENTS.md / CLAUDE.md)
+
+`prompt.go` loads standing guidance from two scopes and injects it into the
+system prompt between the tool list and the footer (so the footer's format rules
+and `Let's begin.` stay last):
+
+- **Global** `~/.claude/` and **project** cwd, each trying `AGENTS.md` then
+  `CLAUDE.md` (first found wins) via `firstInstructionFile`.
+- `LoadInstructions(globalDir, projectDir)` combines them — global first, project
+  second under labeled headers — so project instructions take precedence. Missing
+  files yield `""` (normal); only a real read error is returned. `New` builds the
+  system prompt **after** options are applied so `WithInstructions` can feed it.
+- The injected block is marked as **trusted** user instructions, distinct from
+  the UNTRUSTED web-content markers — keep that distinction when editing prompts.
 
 ## Conventions
 

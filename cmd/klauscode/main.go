@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"klauscode/internal/agent"
@@ -76,7 +77,21 @@ func run() error {
 	registry.Register(websearch.New())
 	registry.Register(webfetch.New())
 
-	ag := agent.New(client, registry, agent.WithTrace(os.Stderr))
+	// Load user/project instructions: a global ~/.claude file plus a per-project
+	// file in the working directory, each trying AGENTS.md then CLAUDE.md. A
+	// failed home lookup degrades to project-only; a real read error aborts.
+	globalDir := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		globalDir = filepath.Join(home, ".claude")
+	}
+	instructions, err := agent.LoadInstructions(globalDir, ".")
+	if err != nil {
+		return err
+	}
+
+	ag := agent.New(client, registry,
+		agent.WithTrace(os.Stderr),
+		agent.WithInstructions(instructions))
 
 	answer, err := ag.Run(context.Background(), task)
 	if err != nil {

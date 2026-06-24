@@ -86,6 +86,40 @@ go run ./cmd/klauscode "Find the Go context package docs and summarize context.W
 > privileges, and `web_fetch`/`web_search` pull in untrusted content. See
 > [Security](#security) before running it on anything sensitive.
 
+### Building an executable
+
+`go run` compiles and runs in one step, which is handy during development. To
+produce a standalone binary instead, use `go build`:
+
+```sh
+go build -o klauscode ./cmd/klauscode
+./klauscode "What is (12 * 9) + 3?"
+```
+
+Two details worth knowing:
+
+- **Why `./cmd/klauscode`?** It tells Go *which* package to build. The executable
+  comes from the `package main` in [cmd/klauscode/main.go](cmd/klauscode/main.go),
+  not the repo root — the root holds only library packages (`internal/...`). This
+  `cmd/<appname>` layout is the standard Go convention for separating the
+  entrypoint from library code.
+- **Why `-o`?** It sets the **o**utput name/path. Without it, `go build` names the
+  binary after the source directory (here, `klauscode` — so it happens to be the
+  same) and drops it in the current directory. `-o` makes the name explicit and
+  lets you place it elsewhere, e.g. `-o build/klauscode`.
+
+To install the binary onto your `PATH` (into `$GOBIN`, or `$GOPATH/bin`):
+
+```sh
+go install ./cmd/klauscode
+```
+
+Cross-compile for another platform by setting `GOOS`/`GOARCH`:
+
+```sh
+GOOS=linux GOARCH=amd64 go build -o klauscode-linux ./cmd/klauscode
+```
+
 ### Configuration
 
 | Variable          | Default                      | Purpose                                            |
@@ -96,6 +130,28 @@ go run ./cmd/klauscode "Find the Go context package docs and summarize context.W
 
 \* Required only for the public OpenAI API. When `OPENAI_BASE_URL` points at a
 local server, the key is optional (a placeholder is used).
+
+### Instructions files (AGENTS.md / CLAUDE.md)
+
+You can give klauscode standing guidance — build commands, conventions,
+constraints — without touching the code. On startup it loads two optional files
+and injects them into the system prompt:
+
+| Scope     | Location                  | Tried in order        |
+| --------- | ------------------------- | --------------------- |
+| Global    | `~/.claude/`              | `AGENTS.md`, `CLAUDE.md` |
+| Project   | the working directory     | `AGENTS.md`, `CLAUDE.md` |
+
+For each scope the first file found wins (`AGENTS.md` is the cross-tool
+[agents.md](https://agents.md/) convention; `CLAUDE.md` is the fallback). When
+both scopes have a file, both are included — global first, then project — and
+project instructions take precedence on conflict. Missing files are fine; full
+contents are injected with no truncation.
+
+```sh
+echo 'Always run `go test ./...` before claiming a task is done.' > AGENTS.md
+go run ./cmd/klauscode "Add a helper and a test for it"
+```
 
 ### Local OpenAI-compatible servers (e.g. LM Studio)
 
