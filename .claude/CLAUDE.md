@@ -73,10 +73,24 @@ disclosure** so the prompt stays small even with many installed:
 
 - **Zero third-party dependencies.** Standard library only. Keep it that way
   unless there's a strong reason; `go.mod` has no `require` block.
-- Stop sequence `Observation:` hands control back to the harness before the
-  model writes an observation itself.
-- Tool errors are returned to the model as `Observation: Error: ...` so it can
-  self-correct; the run does not abort on a tool error.
+- **The ReAct labels carry a per-run nonce; the `Observation` label is the stop
+  sequence.** A stop sequence is matched on the raw output stream regardless of
+  JSON escaping, so a bare `Observation:` would truncate generation mid-tool-call
+  whenever a model wrote that literal into content (e.g. a `write_file` whose
+  `content` quotes the word). To prevent the collision, `agent.New` generates a
+  random nonce (`newLabelNonce`, `crypto/rand`; overridable in tests via
+  `WithLabelNonce`) and the labels become `Action<nonce>:` / `Observation<nonce>:`
+  / `Thought<nonce>:` / `Final Answer<nonce>:`. Only the **nonced**
+  `Observation<nonce>:` is sent as the stop, so content can no longer forge it.
+  This mirrors `textutil.WrapUntrusted`'s nonce for untrusted web content. The
+  nonce is threaded into the prompt footer (`promptFooterTemplate`, rendered with
+  `%[1]s`), the injected observation, and the nudge messages. **The parser stays
+  lenient:** the label regexes use `Action\w*:` / `final\s+answer\w*` so they
+  accept the nonced **and** bare labels — a small model that drops the nonce still
+  parses, and the worst case is a missed stop (wasted tokens via the nudge path),
+  never a truncated tool call.
+- Tool errors are returned to the model as `Observation<nonce>: Error: ...` so it
+  can self-correct; the run does not abort on a tool error.
 - Final answer takes precedence over an action in the same turn.
 - **Final-answer detection is lenient, and a no-action turn is an implicit final
   answer.** Small local models (e.g. Gemma) render the label inconsistently or

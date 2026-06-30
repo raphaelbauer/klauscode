@@ -14,23 +14,28 @@ import (
 // scriptedClient returns a queued reply per call and records the messages it
 // received, so tests can assert observations were threaded back.
 type scriptedClient struct {
-	replies []string
-	calls   int
-	lastMsg []llm.Message
+	replies  []string
+	calls    int
+	lastMsg  []llm.Message
+	lastStop []string
 }
 
-func (s *scriptedClient) Complete(_ context.Context, messages []llm.Message, _ []string) (string, error) {
+func (s *scriptedClient) Complete(_ context.Context, messages []llm.Message, stop []string) (string, error) {
 	s.lastMsg = messages
+	s.lastStop = stop
 	reply := s.replies[s.calls]
 	s.calls++
 	return reply, nil
 }
 
+// newTestAgent builds an agent with a fixed label nonce so the injected
+// observation labels and stop sequence are deterministic in assertions. A test
+// may override the nonce by passing its own WithLabelNonce after this.
 func newTestAgent(client llm.Client, opts ...Option) *Agent {
 	reg := tools.NewRegistry()
 	reg.Register(calculate.New())
 	reg.Register(writefile.New())
-	return New(client, reg, opts...)
+	return New(client, reg, append([]Option{WithLabelNonce("TEST")}, opts...)...)
 }
 
 func TestAgentWithInstructionsReachesSystemPrompt(t *testing.T) {
@@ -78,14 +83,44 @@ func TestAgentRunHappyPath(t *testing.T) {
 	}
 
 	// and the observation (the tool result) was fed back into the conversation
+	// under the nonced Observation label
 	var sawObservation bool
 	for _, m := range client.lastMsg {
-		if m.Role == "user" && strings.Contains(m.Content, "Observation: 111") {
+		if m.Role == "user" && strings.Contains(m.Content, "ObservationTEST: 111") {
 			sawObservation = true
 		}
 	}
 	if !sawObservation {
-		t.Errorf("expected observation 'Observation: 111' in messages, got %+v", client.lastMsg)
+		t.Errorf("expected observation 'ObservationTEST: 111' in messages, got %+v", client.lastMsg)
+	}
+
+	// and the stop sequence sent to the model is the nonced Observation label, so
+	// content quoting the bare word "Observation:" cannot truncate generation
+	if len(client.lastStop) != 1 || client.lastStop[0] != "ObservationTEST:" {
+		t.Errorf("stop = %v, want [ObservationTEST:]", client.lastStop)
+	}
+}
+
+func TestAgentRunHappyPathWithNoncedLabels(t *testing.T) {
+	// given a model that emits the nonced labels exactly as the prompt asks
+	client := &scriptedClient{replies: []string{
+		"ThoughtTEST: I need to compute.\nActionTEST: calculate((12 * 9) + 3)",
+		"ThoughtTEST: I have found the answer.\nFinal AnswerTEST: 111",
+	}}
+	ag := newTestAgent(client)
+
+	// when the agent runs the task
+	answer, err := ag.Run(context.Background(), "What is (12 * 9) + 3?")
+
+	// then the nonced Action and Final Answer are parsed and the loop completes
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if answer != "111" {
+		t.Errorf("answer = %q, want %q", answer, "111")
+	}
+	if client.calls != 2 {
+		t.Errorf("expected 2 model calls, got %d", client.calls)
 	}
 }
 
@@ -109,7 +144,7 @@ func TestAgentRunToolErrorIsObservation(t *testing.T) {
 	}
 	var sawError bool
 	for _, m := range client.lastMsg {
-		if strings.Contains(m.Content, "Observation: Error:") {
+		if strings.Contains(m.Content, "ObservationTEST: Error:") {
 			sawError = true
 		}
 	}

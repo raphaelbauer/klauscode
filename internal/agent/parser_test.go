@@ -443,3 +443,64 @@ func TestParseStepMalformed(t *testing.T) {
 		t.Errorf("expected no action and no final, got %+v", step)
 	}
 }
+
+func TestParseStepNoncedLabels(t *testing.T) {
+	// given turns whose ReAct labels carry a per-run nonce suffix (the form the
+	// prompt asks the model to emit)
+	tests := []struct {
+		name     string
+		output   string
+		wantAct  bool
+		wantTool string
+		wantArgs string
+		wantFin  bool
+		wantAns  string
+	}{
+		{
+			name:     "nonced action parses with the nonce stripped from the tool name",
+			output:   "Thought3f9a: compute it.\nAction3f9a: calculate((12 * 9) + 3)",
+			wantAct:  true,
+			wantTool: "calculate",
+			wantArgs: "(12 * 9) + 3",
+		},
+		{
+			name:    "nonced final answer parses",
+			output:  "Thought3f9a: done.\nFinal Answer3f9a: 111",
+			wantFin: true,
+			wantAns: "111",
+		},
+		{
+			name:     "nonced multi-line JSON action parses",
+			output:   "Action3f9a: write_file({\n  \"path\": \"p\",\n  \"content\": \"x\"\n})",
+			wantAct:  true,
+			wantTool: "write_file",
+			wantArgs: "{\n  \"path\": \"p\",\n  \"content\": \"x\"\n}",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when parsed
+			step := ParseStep(tt.output)
+
+			// then the nonced labels are recognized just like the bare ones
+			if step.HasAction != tt.wantAct {
+				t.Fatalf("HasAction = %v, want %v (step %+v)", step.HasAction, tt.wantAct, step)
+			}
+			if tt.wantAct {
+				if step.ToolName != tt.wantTool {
+					t.Errorf("ToolName = %q, want %q", step.ToolName, tt.wantTool)
+				}
+				if step.ToolArgs != tt.wantArgs {
+					t.Errorf("ToolArgs = %q, want %q", step.ToolArgs, tt.wantArgs)
+				}
+			}
+			if step.HasFinal != tt.wantFin {
+				t.Fatalf("HasFinal = %v, want %v (step %+v)", step.HasFinal, tt.wantFin, step)
+			}
+			if tt.wantFin && step.FinalAnswer != tt.wantAns {
+				t.Errorf("FinalAnswer = %q, want %q", step.FinalAnswer, tt.wantAns)
+			}
+		})
+	}
+}

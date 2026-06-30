@@ -24,22 +24,31 @@ var (
 	// turn. It is deliberately lenient because small local models render the label
 	// inconsistently: it is case-insensitive, tolerates surrounding markdown
 	// emphasis (e.g. **Final Answer:**), and allows extra whitespace between the
-	// two words and before the colon. The multiline `^` anchor keeps it from
-	// matching the phrase mid-sentence inside a Thought, and the `s` flag lets a
-	// multi-line answer be captured to the end of input.
-	finalRe = regexp.MustCompile(`(?ims)^\s*\**\s*final\s+answer\s*\**\s*:\s*\**\s*(.*)`)
+	// two words and before the colon. The `\w*` after "answer" matches the optional
+	// per-run nonce suffix the prompt asks for (e.g. "Final Answer3f9a:") while
+	// still matching the bare label, so a model that drops the nonce is not
+	// rejected. The multiline `^` anchor keeps it from matching the phrase
+	// mid-sentence inside a Thought, and the `s` flag lets a multi-line answer be
+	// captured to the end of input.
+	finalRe = regexp.MustCompile(`(?ims)^\s*\**\s*final\s+answer\w*\s*\**\s*:\s*\**\s*(.*)`)
 	// actionRe matches a whole line that is an Action and captures the tool name
 	// and the raw argument text inside the parentheses. It is anchored to the
 	// full line (^…$) so an "Action: …" that merely appears inside prose — e.g.
-	// a documentation example the model writes in backticks — cannot match.
-	actionRe = regexp.MustCompile(`^Action:\s*([A-Za-z_]\w*)\s*\((.*)\)\s*$`)
+	// a documentation example the model writes in backticks — cannot match. The
+	// `\w*` after "Action" tolerates the optional per-run nonce suffix.
+	actionRe = regexp.MustCompile(`^Action\w*:\s*([A-Za-z_]\w*)\s*\((.*)\)\s*$`)
 	// actionOpenRe matches the start of an Action up to its opening parenthesis,
 	// capturing the tool name. Unlike actionRe it does NOT anchor the closing
 	// paren to the same line, so the argument may span multiple physical lines
 	// (pretty-printed or fenced JSON, a heredoc). The multiline `^` lets it find an
 	// opener anywhere; findActionBlock scans for the LAST one so a trailing real
-	// call wins over an earlier documentation example.
-	actionOpenRe = regexp.MustCompile(`(?m)^\s*Action:\s*([A-Za-z_]\w*)\s*\(`)
+	// call wins over an earlier documentation example. `\w*` tolerates the nonce.
+	actionOpenRe = regexp.MustCompile(`(?m)^\s*Action\w*:\s*([A-Za-z_]\w*)\s*\(`)
+	// actionTokenRe detects an Action label — bare or nonce-suffixed — anywhere in
+	// a turn (not line-anchored). The loop uses it to tell a malformed tool call
+	// (which must be steered with the format nudge, never returned to the user)
+	// from plain prose that is an implicit final answer.
+	actionTokenRe = regexp.MustCompile(`Action\w*:`)
 )
 
 // ParseStep extracts the action and/or final answer from a model turn.
