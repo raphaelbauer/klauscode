@@ -288,3 +288,10 @@ Tests run with no network access: the OpenAI client is tested against
 No streaming, retries/backoff, token accounting, conversation persistence, or
 concurrency. The `Tool` interface and `Registry` make adding tools the natural
 next step.
+
+
+
+# TODOs
+- More stable React loop (json?)
+- sandbox by default
+- subagents

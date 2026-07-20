@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"klauscode/internal/agent"
 	"klauscode/internal/llm"
@@ -67,6 +69,16 @@ func run() error {
 	var opts []llm.Option
 	if baseURL != "" {
 		opts = append(opts, llm.WithBaseURL(baseURL))
+	}
+	// OPENAI_TIMEOUT overrides the per-request HTTP timeout, in seconds. Slow
+	// local servers (a large model on LM Studio) can exceed the 5-minute default;
+	// set 0 to wait indefinitely.
+	if v := os.Getenv("OPENAI_TIMEOUT"); v != "" {
+		secs, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("OPENAI_TIMEOUT must be an integer number of seconds: %q", v)
+		}
+		opts = append(opts, llm.WithTimeout(time.Duration(secs)*time.Second))
 	}
 	client := llm.NewOpenAIClient(apiKey, model, opts...)
 

@@ -57,6 +57,18 @@ func WithHTTPClient(h *http.Client) Option {
 	return func(c *OpenAIClient) { c.httpClient = h }
 }
 
+// WithTimeout overrides the HTTP client's request timeout. Useful for slow local
+// servers (e.g. a large model on LM Studio) whose first token can take minutes.
+// A non-positive duration disables the timeout entirely (waits indefinitely).
+func WithTimeout(d time.Duration) Option {
+	return func(c *OpenAIClient) {
+		if d < 0 {
+			d = 0
+		}
+		c.httpClient.Timeout = d
+	}
+}
+
 // NewOpenAIClient builds a client for the given key and model.
 func NewOpenAIClient(apiKey, model string, opts ...Option) *OpenAIClient {
 	c := &OpenAIClient{
