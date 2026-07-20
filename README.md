@@ -295,3 +295,5 @@ next step.
 - More stable React loop (json?)
 - sandbox by default
 - subagents
+- OpenVS code integration
+- AskUserTool?
