@@ -3,10 +3,19 @@
 [![CI](https://github.com/raphaelbauer/klauscode/actions/workflows/ci.yml/badge.svg)](https://github.com/raphaelbauer/klauscode/actions/workflows/ci.yml)
 
 A small, dependency-free **AI harness** in Go. It drives an OpenAI model through
-a [ReAct](https://arxiv.org/abs/2210.03629) loop — **Thought → Action →
-Observation → Final Answer** — where the model requests tools as plain text, the
-harness intercepts and executes them, feeds the result back, and repeats until
-the model produces a final answer.
+a tool-calling loop: the model requests tools, the harness intercepts and
+executes them, feeds the results back, and repeats until the model produces a
+final answer.
+
+It supports two modes (set with `OPENAI_TOOL_CALLING`, see
+[Tool calling](#tool-calling)):
+
+- **`native`** (default) — the provider's structured **function-calling**: the
+  model returns machine-readable `tool_calls`, which is the most reliable path.
+- **`text`** — the classic [ReAct](https://arxiv.org/abs/2210.03629) protocol
+  (**Thought → Action → Observation → Final Answer**), where the model requests
+  tools as plain text the harness parses. This is the fallback for local
+  models/servers without native tool-call support.
 
 It ships tools for **coding** (read/write/edit files, run shell commands) and
 **web research** (search and fetch pages), plus the original `calculate`. The
@@ -16,23 +25,26 @@ on a small set of tools (notably `bash`) rather than many specialised ones.
 ## How it works
 
 ```
-┌────────┐  prompt   ┌─────────┐  Action: calculate(2+3)   ┌──────────┐
-│  user  │──────────▶│  agent  │──────────────────────────▶│  tools   │
-└────────┘           │ (loop)  │◀──────────────────────────│ registry │
-                     └─────────┘  Observation: 5           └──────────┘
-                          │  Final Answer: 5
+┌────────┐  prompt   ┌─────────┐  tool call: calculate(2+3)  ┌──────────┐
+│  user  │──────────▶│  agent  │────────────────────────────▶│  tools   │
+└────────┘           │ (loop)  │◀────────────────────────────│ registry │
+                     └─────────┘  result: 5                  └──────────┘
+                          │  final answer: 5
                           ▼
                         stdout
 ```
 
-1. The agent sends the system prompt + the user's task to the model.
-2. The model replies with a `Thought:` and an `Action: tool(args)` line.
-   Generation is stopped at `Observation:` so the harness regains control.
-3. The harness parses the action, runs the matching tool, and appends
-   `Observation: <result>` to the conversation.
-4. Steps 2–3 repeat until the model emits `Final Answer:`.
+1. The agent sends the system prompt + the user's task to the model, along with
+   the tool schemas (native mode) or a tool catalog in the prompt (text mode).
+2. The model requests a tool — a structured `tool_call` (native) or an
+   `Action: tool(args)` line (text) — and the harness runs the matching tool.
+3. The harness feeds the result back (a `role:"tool"` message in native mode, an
+   `Observation:` in text mode) and the model continues.
+4. Steps 2–3 repeat until the model replies with no tool call (native) or emits
+   `Final Answer:` (text) — that reply is the answer.
 
-The whole loop lives in [internal/agent/agent.go](internal/agent/agent.go).
+The whole loop lives in [internal/agent/agent.go](internal/agent/agent.go)
+(`runNative` and `runText`).
 
 ## Tools
 
@@ -122,14 +134,33 @@ GOOS=linux GOARCH=amd64 go build -o klauscode-linux ./cmd/klauscode
 
 ### Configuration
 
-| Variable          | Default                      | Purpose                                            |
-| ----------------- | ---------------------------- | -------------------------------------------------- |
-| `OPENAI_API_KEY`  | _(required\*)_               | API key, sent as `Authorization: Bearer`.          |
-| `OPENAI_MODEL`    | `gpt-4o-mini`                | Model name.                                         |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1`  | API base URL (ending in `/v1`); `/chat/completions` is appended. |
+| Variable              | Default                      | Purpose                                            |
+| --------------------- | ---------------------------- | -------------------------------------------------- |
+| `OPENAI_API_KEY`      | _(required\*)_               | API key, sent as `Authorization: Bearer`.          |
+| `OPENAI_MODEL`        | `gpt-4o-mini`                | Model name.                                         |
+| `OPENAI_BASE_URL`     | `https://api.openai.com/v1`  | API base URL (ending in `/v1`); `/chat/completions` is appended. |
+| `OPENAI_TIMEOUT`      | `300`                        | Per-request HTTP timeout in seconds; `0` waits indefinitely (for slow local servers). |
+| `OPENAI_TOOL_CALLING` | `native`                     | How tools are invoked: `native` (structured function-calling), `text` (ReAct text protocol), or `auto` (native, falling back to text if the server rejects it). See [Tool calling](#tool-calling). |
 
 \* Required only for the public OpenAI API. When `OPENAI_BASE_URL` points at a
 local server, the key is optional (a placeholder is used).
+
+### Tool calling
+
+klauscode can drive tools two ways, selected by `OPENAI_TOOL_CALLING`:
+
+- **`native`** (default) uses the provider's structured **function-calling**: the
+  model returns machine-readable `tool_calls` and the harness executes them, with
+  no free-text parsing. Each tool exposes a JSON Schema (its `Parameters()`), which
+  is sent to the model. "No tool call" is the termination signal — the model simply
+  replies. This is the most reliable path and what you want with capable models.
+- **`text`** uses the original **ReAct text protocol**: the model writes
+  `Action: tool(args)` / `Final Answer:` lines that the harness parses, with
+  per-run nonce labels and nudges to recover from malformed turns. Use this for
+  local models/servers that do not support native tool calls.
+- **`auto`** tries `native` and falls back to `text` if the server rejects the
+  request's `tools` field (e.g. an older local server), so a mixed fleet just
+  works.
 
 ### Instructions files (AGENTS.md / CLAUDE.md)
 
@@ -292,7 +323,6 @@ next step.
 
 
 # TODOs
-- More stable React loop (json?)
 - sandbox by default
 - subagents
 - OpenVS code integration

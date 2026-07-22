@@ -4,6 +4,7 @@
 package webfetch
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -42,6 +43,12 @@ func (t *WebFetchTool) Name() string { return "web_fetch" }
 
 func (t *WebFetchTool) Description() string {
 	return "web_fetch(<url>): Fetch a URL and return its page text (HTML stripped). Put the URL directly inside the parentheses, e.g. web_fetch(https://pkg.go.dev/context)."
+}
+
+// Parameters is the JSON Schema for native function-calling: a single required
+// string mapped straight to Call.
+func (t *WebFetchTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch, e.g. https://pkg.go.dev/context"}},"required":["url"]}`)
 }
 
 // Call fetches args (the raw URL), converts HTML to text and returns it wrapped

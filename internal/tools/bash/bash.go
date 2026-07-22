@@ -10,6 +10,7 @@ package bash
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -44,6 +45,12 @@ func (t *BashTool) Name() string { return "bash" }
 
 func (t *BashTool) Description() string {
 	return "bash(<shell command>): Run a shell command (sh -c) and return combined stdout+stderr. Put the command directly inside the parentheses, e.g. bash(ls -R) — not bash(command=\"ls -R\"). Use for ls, grep, go build, go test."
+}
+
+// Parameters is the JSON Schema for native function-calling: a single required
+// string mapped straight to Call.
+func (t *BashTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"The shell command to run with sh -c, e.g. ls -R or go test ./..."}},"required":["command"]}`)
 }
 
 // Call runs args as a shell command and returns its combined output. A non-zero

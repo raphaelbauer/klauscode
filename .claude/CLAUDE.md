@@ -1,35 +1,76 @@
 # klauscode — project instructions for Claude
 
-A small, dependency-free ReAct AI harness in Go. Drives an OpenAI model through a
-Thought/Action/Observation/Final-Answer loop, executing tool calls on the
-model's behalf.
+A small, dependency-free AI harness in Go. Drives an OpenAI model through a
+tool-calling loop, executing tool calls on the model's behalf. It supports two
+paths: **native function-calling** (structured `tool_calls`, the default and most
+reliable) and the original **ReAct text protocol**
+(Thought/Action/Observation/Final-Answer, the fallback) — see Tool calling below.
 
 ## Architecture
 
 Layered with interface-based DI; `cmd/klauscode` is the composition root.
 
-- `internal/llm` — `Client` interface + OpenAI impl over `net/http`. Override the
-  API base URL (ending in `/v1`) via `WithBaseURL`; the client appends
-  `/chat/completions`. Used for local servers (LM Studio) and httptest.
+- `internal/llm` — `Client` interface + OpenAI impl over `net/http`. `Complete`
+  takes an `llm.Request` (messages + either a `Stop` sequence for the text path or
+  `Tools`/`ToolChoice` for native function-calling) and returns an `llm.Response`
+  (`Content` + structured `ToolCalls` + `FinishReason`). A non-200 becomes a typed
+  `*StatusError` so the agent's `auto` mode can tell a rejected request from a
+  transport failure. Override the API base URL (ending in `/v1`) via `WithBaseURL`;
+  the client appends `/chat/completions`. Used for local servers (LM Studio) and
+  httptest.
 - `internal/tools` — `Tool` interface and `Registry`, with one package per tool:
   `calculate` (recursive-descent arithmetic evaluator in `eval.go`), `readfile`,
   `writefile`, `editfile`, `bash`, `websearch`, `webfetch`, `skill` (serves Agent
   Skill bodies on demand — see below), plus shared text helpers in `textutil`
   (HTML→text, truncation, untrusted-content wrapping). Each tool package mirrors
-  `calculate`: a struct, a `New()` constructor, and the three `Tool` methods;
-  structural typing means none of them import `tools`.
+  `calculate`: a struct, a `New()` constructor, the three `Tool` methods, and an
+  optional `Parameters() json.RawMessage` (the `Schematic` interface — a JSON
+  Schema for native calling). `json.RawMessage` is stdlib, so structural typing
+  still means none of them import `tools`.
 - `internal/skills` — discovers Agent Skills (`skills/<name>/SKILL.md`) and
   renders the prompt catalog (see Agent Skills below). Standalone, zero-dep.
-- `internal/agent` — the ReAct loop (`agent.go`), the system prompt builder
-  (`prompt.go`, renders the tool list from the registry **and injects an optional
-  Agent Skills catalog + user/project instructions** via `WithSkills` /
-  `LoadInstructions`/`WithInstructions`), and the turn parser (`parser.go`).
-- `cmd/klauscode` — reads `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL`,
-  wires, runs. When `OPENAI_BASE_URL` is set, the API key is optional (a
-  placeholder is used) so local OpenAI-compatible servers work without a key. It
-  also resolves `~/.claude` + the cwd and feeds `agent.LoadInstructions` into
-  `agent.WithInstructions`, plus `skills.Discover` into the `skill` tool and
-  `agent.WithSkills`.
+- `internal/agent` — the loop (`agent.go`: `runNative` and the text-path
+  `runText`, dispatched by `Run` on the `ToolCalling` mode), the system prompt
+  builder (`prompt.go`: `BuildSystemPrompt` for the text path and
+  `BuildNativeSystemPrompt` for native; both render tools from the registry **and
+  inject an optional Agent Skills catalog + user/project instructions** via
+  `WithSkills` / `LoadInstructions`/`WithInstructions`), and the text-path turn
+  parser (`parser.go`, used only by `runText`).
+- `cmd/klauscode` — reads `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL` /
+  `OPENAI_TOOL_CALLING` (`native` default | `text` | `auto`, via
+  `agent.WithToolCalling`), wires, runs. When `OPENAI_BASE_URL` is set, the API key
+  is optional (a placeholder is used) so local OpenAI-compatible servers work
+  without a key. It also resolves `~/.claude` + the cwd and feeds
+  `agent.LoadInstructions` into `agent.WithInstructions`, plus `skills.Discover`
+  into the `skill` tool and `agent.WithSkills`.
+
+## Tool calling (native vs text)
+
+`OPENAI_TOOL_CALLING` selects the path; `agent.Run` dispatches on the mode.
+
+- **`native`** (default) — `runNative` offers each tool's JSON Schema
+  (`Parameters()`) as an OpenAI function and executes the structured `tool_calls`
+  the model returns. **No text parsing, no nonce, no stop sequence, no nudges.**
+  Termination is reliable: a turn with **no** `tool_calls` is the final answer
+  (its `Content`). Each result is fed back as a `role:"tool"` message paired by
+  `tool_call_id`.
+- **`text`** — `runText` is the original ReAct loop, unchanged (nonce labels, the
+  `Observation<nonce>:` stop sequence, `ParseStep`, nudges, implicit-final
+  heuristics). It is the fallback for models/servers without native tool-call
+  support. **All the parser/prompt conventions below apply only to this path.**
+- **`auto`** — runs `runNative`; if the **first** request fails with a
+  `*llm.StatusError` (server rejected the `tools` field) it restarts under
+  `runText`. A transport error, or a failure mid-run, surfaces as-is (no fallback).
+
+**Bridging native args to the `Tool.Call(args string)` contract without changing
+any tool:** `Registry.MapToolCallArgs(name, argsJSON)` inspects the tool's schema.
+A schema with **exactly one property** → the value of that property is passed to
+`Call` (so single-arg tools like `calculate`/`bash` receive their raw value,
+exactly as on the text path). **Multiple properties** (or no schema) → the raw
+arguments JSON is passed through, which `write_file`/`edit_file` already decode via
+`textutil.DecodeJSONArgs`. So `Call` is identical on both paths; only how its
+string argument is produced differs. Native calling also structurally eliminates
+the text-path arg-ambiguity bugs (named-param wrappers, parens/quotes in values).
 
 ## Instructions files (AGENTS.md / CLAUDE.md)
 
@@ -73,10 +114,24 @@ disclosure** so the prompt stays small even with many installed:
 
 - **Zero third-party dependencies.** Standard library only. Keep it that way
   unless there's a strong reason; `go.mod` has no `require` block.
-- Stop sequence `Observation:` hands control back to the harness before the
-  model writes an observation itself.
-- Tool errors are returned to the model as `Observation: Error: ...` so it can
-  self-correct; the run does not abort on a tool error.
+- **The ReAct labels carry a per-run nonce; the `Observation` label is the stop
+  sequence.** A stop sequence is matched on the raw output stream regardless of
+  JSON escaping, so a bare `Observation:` would truncate generation mid-tool-call
+  whenever a model wrote that literal into content (e.g. a `write_file` whose
+  `content` quotes the word). To prevent the collision, `agent.New` generates a
+  random nonce (`newLabelNonce`, `crypto/rand`; overridable in tests via
+  `WithLabelNonce`) and the labels become `Action<nonce>:` / `Observation<nonce>:`
+  / `Thought<nonce>:` / `Final Answer<nonce>:`. Only the **nonced**
+  `Observation<nonce>:` is sent as the stop, so content can no longer forge it.
+  This mirrors `textutil.WrapUntrusted`'s nonce for untrusted web content. The
+  nonce is threaded into the prompt footer (`promptFooterTemplate`, rendered with
+  `%[1]s`), the injected observation, and the nudge messages. **The parser stays
+  lenient:** the label regexes use `Action\w*:` / `final\s+answer\w*` so they
+  accept the nonced **and** bare labels — a small model that drops the nonce still
+  parses, and the worst case is a missed stop (wasted tokens via the nudge path),
+  never a truncated tool call.
+- Tool errors are returned to the model as `Observation<nonce>: Error: ...` so it
+  can self-correct; the run does not abort on a tool error.
 - Final answer takes precedence over an action in the same turn.
 - **Final-answer detection is lenient, and a no-action turn is an implicit final
   answer.** Small local models (e.g. Gemma) render the label inconsistently or
@@ -147,8 +202,17 @@ mitigations when editing the web tools or `prompt.go`.
 Create a package under `internal/tools/<name>/`, implement `tools.Tool`
 (`Name`/`Description`/`Call`), and register it in `cmd/klauscode/main.go`. The
 system prompt updates automatically from the registry — no prompt edits needed.
-The `Description()` string is the model's only documentation for the tool, so
-make it a self-describing signature (and note JSON args / examples where useful).
+The `Description()` string is the model's documentation on the text path, so make
+it a self-describing signature (and note JSON args / examples where useful).
+
+Also implement `Parameters() json.RawMessage` (the optional `Schematic`
+interface) returning a JSON Schema `object` for the arguments — this is what the
+native path offers the model. Follow the single-property convention: a **one-arg**
+tool declares exactly one property (its value is mapped straight to `Call`); a
+**multi-arg** tool declares one property per field and keeps decoding the JSON in
+`Call` via `textutil.DecodeJSONArgs`. Return only `json.RawMessage` (stdlib) so
+the package still doesn't import `tools`. A tool without `Parameters()` still works
+on the text path but is not offered as a native function.
 
 ## Testing
 

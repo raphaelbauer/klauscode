@@ -3,7 +3,10 @@
 // them on the model's behalf.
 package tools
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // Tool is a single capability the model can call.
 type Tool interface {
@@ -14,6 +17,17 @@ type Tool interface {
 	// Call runs the tool. args is the raw text the model wrote inside the
 	// parentheses of the Action line.
 	Call(args string) (string, error)
+}
+
+// Schematic is an OPTIONAL interface a Tool may also implement to expose a JSON
+// Schema for its arguments, enabling native function-calling. It is kept separate
+// from Tool so tool packages can implement it without importing this package
+// (json.RawMessage is stdlib) — the same structural-typing property Tool relies
+// on. A tool that does not implement it can still be called on the text path but
+// is not offered as a native function.
+type Schematic interface {
+	// Parameters returns a JSON Schema "object" describing the tool's arguments.
+	Parameters() json.RawMessage
 }
 
 // Registry holds the tools available to an agent.
@@ -54,4 +68,76 @@ func (r *Registry) List() []Tool {
 		out = append(out, r.tools[name])
 	}
 	return out
+}
+
+// Schema returns the named tool's JSON Schema for native function-calling, if the
+// tool implements Schematic. ok is false for an unknown tool or one without a
+// schema (such a tool is usable on the text path but not offered natively).
+func (r *Registry) Schema(name string) (json.RawMessage, bool) {
+	t, ok := r.tools[name]
+	if !ok {
+		return nil, false
+	}
+	s, ok := t.(Schematic)
+	if !ok {
+		return nil, false
+	}
+	return s.Parameters(), true
+}
+
+// MapToolCallArgs converts a native tool call's JSON arguments string into the
+// single string the tool's Call expects, bridging structured function-calling to
+// the raw-string Call contract without changing any tool.
+//
+//   - If the tool's schema declares exactly ONE property, the value of that
+//     property is returned (a JSON string value is unquoted). So single-arg tools
+//     like calculate/bash receive their raw value, exactly as on the text path.
+//   - Otherwise (multiple properties, or no schema) the arguments JSON is returned
+//     unchanged, so multi-arg tools like write_file decode it via
+//     textutil.DecodeJSONArgs just as they already do.
+//
+// On any parse failure it returns the raw arguments so the tool surfaces its own
+// self-correcting decode error rather than the registry swallowing it.
+func (r *Registry) MapToolCallArgs(name, argumentsJSON string) string {
+	schema, ok := r.Schema(name)
+	if !ok {
+		return argumentsJSON
+	}
+	prop, single := singleProperty(schema)
+	if !single {
+		return argumentsJSON
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(argumentsJSON), &obj); err != nil {
+		return argumentsJSON
+	}
+	raw, ok := obj[prop]
+	if !ok {
+		return argumentsJSON
+	}
+	// A JSON string value (the common case) is unquoted to the bare value; a
+	// non-string value keeps its JSON form.
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return string(raw)
+}
+
+// singleProperty reports the sole property name of a JSON Schema object, or
+// single=false when the schema does not declare exactly one property.
+func singleProperty(schema json.RawMessage) (name string, single bool) {
+	var s struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &s); err != nil {
+		return "", false
+	}
+	if len(s.Properties) != 1 {
+		return "", false
+	}
+	for k := range s.Properties {
+		return k, true
+	}
+	return "", false
 }

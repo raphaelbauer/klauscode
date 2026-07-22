@@ -134,7 +134,7 @@ func TestBuildSystemPromptWithInstructions(t *testing.T) {
 	reg.Register(calculate.New())
 
 	// when building the prompt with instructions
-	prompt := BuildSystemPrompt(reg, "", "always answer in French")
+	prompt := BuildSystemPrompt(reg, "", "always answer in French", "")
 
 	// then the instructions section and the footer are both present
 	if !strings.Contains(prompt, "USER & PROJECT INSTRUCTIONS") {
@@ -154,7 +154,7 @@ func TestBuildSystemPromptWithoutInstructions(t *testing.T) {
 	reg.Register(calculate.New())
 
 	// when building the prompt with only whitespace
-	prompt := BuildSystemPrompt(reg, "", "   \n  ")
+	prompt := BuildSystemPrompt(reg, "", "   \n  ", "")
 
 	// then no instructions section is emitted
 	if strings.Contains(prompt, "USER & PROJECT INSTRUCTIONS") {
@@ -169,7 +169,7 @@ func TestBuildSystemPromptWithSkills(t *testing.T) {
 	catalog := "- greet: Greet a person enthusiastically by name."
 
 	// when building the prompt with the catalog and some instructions
-	prompt := BuildSystemPrompt(reg, catalog, "always answer in French")
+	prompt := BuildSystemPrompt(reg, catalog, "always answer in French", "")
 
 	// then the skills section, its content, and the footer are all present
 	if !strings.Contains(prompt, "AGENT SKILLS") {
@@ -191,13 +191,34 @@ func TestBuildSystemPromptWithSkills(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptRendersLabelNonce(t *testing.T) {
+	// given a registry and a fixed label nonce
+	reg := tools.NewRegistry()
+	reg.Register(calculate.New())
+
+	// when building the prompt with the nonce
+	prompt := BuildSystemPrompt(reg, "", "", "3f9a")
+
+	// then the ReAct labels in the format rules carry the nonce so the model is
+	// shown the exact tokens to emit (the Observation label is also the stop seq)
+	for _, label := range []string{"Action3f9a:", "Observation3f9a:", "Thought3f9a:", "Final Answer3f9a:"} {
+		if !strings.Contains(prompt, label) {
+			t.Errorf("expected nonced label %q in prompt", label)
+		}
+	}
+	// and the bare label does not appear as a standalone format directive
+	if strings.Contains(prompt, "Action: [tool_name]") {
+		t.Errorf("bare Action label leaked into the prompt despite a nonce")
+	}
+}
+
 func TestBuildSystemPromptWithoutSkills(t *testing.T) {
 	// given a registry and a blank catalog
 	reg := tools.NewRegistry()
 	reg.Register(calculate.New())
 
 	// when building the prompt with no skills
-	prompt := BuildSystemPrompt(reg, "", "")
+	prompt := BuildSystemPrompt(reg, "", "", "")
 
 	// then no skills section is emitted
 	if strings.Contains(prompt, "AGENT SKILLS") {
