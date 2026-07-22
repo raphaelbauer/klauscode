@@ -113,10 +113,20 @@ func run() error {
 	}
 	registry.Register(skill.New(discovered))
 
+	// OPENAI_TOOL_CALLING selects how tools are invoked: "native" (default) uses
+	// the provider's structured function-calling; "text" uses the ReAct text
+	// protocol (for servers/models without tool-call support); "auto" tries native
+	// and falls back to text if the server rejects the tools field.
+	toolCalling, err := parseToolCalling(os.Getenv("OPENAI_TOOL_CALLING"))
+	if err != nil {
+		return err
+	}
+
 	ag := agent.New(client, registry,
 		agent.WithTrace(os.Stderr),
 		agent.WithInstructions(instructions),
-		agent.WithSkills(skills.Catalog(discovered)))
+		agent.WithSkills(skills.Catalog(discovered)),
+		agent.WithToolCalling(toolCalling))
 
 	answer, err := ag.Run(context.Background(), task)
 	if err != nil {
@@ -126,4 +136,19 @@ func run() error {
 	fmt.Fprintln(os.Stderr, "--- final answer ---")
 	fmt.Println(answer)
 	return nil
+}
+
+// parseToolCalling maps the OPENAI_TOOL_CALLING env value to a mode. An empty
+// value defaults to native; an unrecognized value is a usage error.
+func parseToolCalling(v string) (agent.ToolCalling, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "native":
+		return agent.ToolCallingNative, nil
+	case "text":
+		return agent.ToolCallingText, nil
+	case "auto":
+		return agent.ToolCallingAuto, nil
+	default:
+		return "", fmt.Errorf("OPENAI_TOOL_CALLING must be one of native, text, auto (got %q)", v)
+	}
 }

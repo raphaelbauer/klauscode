@@ -3,6 +3,7 @@
 package editfile
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -22,6 +23,13 @@ func (t *EditFileTool) Name() string { return "edit_file" }
 
 func (t *EditFileTool) Description() string {
 	return `edit_file({"path": str, "old": str, "new": str}): Replace the unique occurrence of old with new in a file. Single-line JSON.`
+}
+
+// Parameters is the JSON Schema for native function-calling. It has more than one
+// property, so the registry passes the arguments JSON straight to Call, which
+// decodes it into editArgs — the same path used on the text side.
+func (t *EditFileTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"The path of the file to edit"},"old":{"type":"string","description":"The exact, unique text to replace"},"new":{"type":"string","description":"The replacement text"}},"required":["path","old","new"]}`)
 }
 
 // editArgs is the JSON shape the model passes inside the parentheses.

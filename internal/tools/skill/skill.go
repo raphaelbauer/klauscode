@@ -6,6 +6,7 @@
 package skill
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -30,6 +31,12 @@ func (t *SkillTool) Name() string { return "skill" }
 
 func (t *SkillTool) Description() string {
 	return "skill(<name>): Load the full instructions for an available agent skill by name, e.g. skill(changelog). Use only names listed in the AGENT SKILLS section, then follow the instructions it returns."
+}
+
+// Parameters is the JSON Schema for native function-calling: a single required
+// string mapped straight to Call.
+func (t *SkillTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string","description":"The name of the agent skill to load, as listed in the AGENT SKILLS section"}},"required":["name"]}`)
 }
 
 // Call returns the named skill's body, lightly framed so the model can see where

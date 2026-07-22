@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,30 +13,42 @@ import (
 )
 
 // scriptedClient returns a queued reply per call and records the messages it
-// received, so tests can assert observations were threaded back.
+// received, so tests can assert observations were threaded back. replies scripts
+// the text path (Content only); responses, when set, scripts the native path with
+// full llm.Response values (tool calls and/or content).
 type scriptedClient struct {
-	replies  []string
-	calls    int
-	lastMsg  []llm.Message
-	lastStop []string
+	replies   []string
+	responses []llm.Response
+	calls     int
+	lastMsg   []llm.Message
+	lastReq   llm.Request
 }
 
-func (s *scriptedClient) Complete(_ context.Context, messages []llm.Message, stop []string) (string, error) {
-	s.lastMsg = messages
-	s.lastStop = stop
+func (s *scriptedClient) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	s.lastMsg = req.Messages
+	s.lastReq = req
+	if s.responses != nil {
+		resp := s.responses[s.calls]
+		s.calls++
+		return resp, nil
+	}
 	reply := s.replies[s.calls]
 	s.calls++
-	return reply, nil
+	return llm.Response{Content: reply}, nil
 }
 
-// newTestAgent builds an agent with a fixed label nonce so the injected
-// observation labels and stop sequence are deterministic in assertions. A test
-// may override the nonce by passing its own WithLabelNonce after this.
+// newTestAgent builds an agent on the ReAct text path with a fixed label nonce so
+// the injected observation labels and stop sequence are deterministic in
+// assertions. The text mode is pinned here because these tests exercise the
+// text-protocol behavior (parsing, nudges, implicit finals); native-path tests
+// build their own agents with WithToolCalling(ToolCallingNative). A test may
+// override an option by passing its own after this.
 func newTestAgent(client llm.Client, opts ...Option) *Agent {
 	reg := tools.NewRegistry()
 	reg.Register(calculate.New())
 	reg.Register(writefile.New())
-	return New(client, reg, append([]Option{WithLabelNonce("TEST")}, opts...)...)
+	base := []Option{WithLabelNonce("TEST"), WithToolCalling(ToolCallingText)}
+	return New(client, reg, append(base, opts...)...)
 }
 
 func TestAgentWithInstructionsReachesSystemPrompt(t *testing.T) {
@@ -96,8 +109,8 @@ func TestAgentRunHappyPath(t *testing.T) {
 
 	// and the stop sequence sent to the model is the nonced Observation label, so
 	// content quoting the bare word "Observation:" cannot truncate generation
-	if len(client.lastStop) != 1 || client.lastStop[0] != "ObservationTEST:" {
-		t.Errorf("stop = %v, want [ObservationTEST:]", client.lastStop)
+	if len(client.lastReq.Stop) != 1 || client.lastReq.Stop[0] != "ObservationTEST:" {
+		t.Errorf("stop = %v, want [ObservationTEST:]", client.lastReq.Stop)
 	}
 }
 
@@ -301,5 +314,159 @@ func TestAgentRunStepLimit(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "step limit") {
 		t.Errorf("error = %v, want step-limit error", err)
+	}
+}
+
+// newNativeAgent builds an agent on the native function-calling path.
+func newNativeAgent(client llm.Client, mode ToolCalling, opts ...Option) *Agent {
+	reg := tools.NewRegistry()
+	reg.Register(calculate.New())
+	reg.Register(writefile.New())
+	base := []Option{WithToolCalling(mode)}
+	return New(client, reg, append(base, opts...)...)
+}
+
+func TestAgentRunNativeExecutesToolThenFinishes(t *testing.T) {
+	// given a model that first calls calculate, then replies with no tool calls
+	client := &scriptedClient{responses: []llm.Response{
+		{ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "calculate", Arguments: `{"expression":"(12 * 9) + 3"}`}}},
+		{Content: "The answer is 111."},
+	}}
+	ag := newNativeAgent(client, ToolCallingNative)
+
+	// when the agent runs
+	answer, err := ag.Run(context.Background(), "what is (12 * 9) + 3?")
+
+	// then the tool ran and the no-tool-call turn is the final answer
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if answer != "The answer is 111." {
+		t.Errorf("answer = %q, want %q", answer, "The answer is 111.")
+	}
+	if client.calls != 2 {
+		t.Errorf("model calls = %d, want 2", client.calls)
+	}
+
+	// and the tool result was threaded back as a role:"tool" message paired by id
+	var toolMsg *llm.Message
+	for i := range client.lastMsg {
+		if client.lastMsg[i].Role == "tool" {
+			toolMsg = &client.lastMsg[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatalf("no role:tool message threaded back, got %+v", client.lastMsg)
+	}
+	if toolMsg.ToolCallID != "call_1" {
+		t.Errorf("tool message ToolCallID = %q, want call_1", toolMsg.ToolCallID)
+	}
+	if toolMsg.Content != "111" {
+		t.Errorf("tool message Content = %q, want 111 (the calculate result)", toolMsg.Content)
+	}
+
+	// and the request carried the native tool specs, not a stop sequence
+	if len(client.lastReq.Tools) == 0 {
+		t.Error("expected native tool specs in the request, got none")
+	}
+	if len(client.lastReq.Stop) != 0 {
+		t.Errorf("stop = %v, want none on the native path", client.lastReq.Stop)
+	}
+}
+
+func TestAgentRunNativeToolErrorBecomesObservation(t *testing.T) {
+	// given a tool call that will fail (bad expression), then a final reply
+	client := &scriptedClient{responses: []llm.Response{
+		{ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "calculate", Arguments: `{"expression":"not math"}`}}},
+		{Content: "Sorry, that was not a valid expression."},
+	}}
+	ag := newNativeAgent(client, ToolCallingNative)
+
+	// when the agent runs
+	answer, err := ag.Run(context.Background(), "compute nonsense")
+
+	// then the run does not abort; the tool error is fed back and the model recovers
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if answer != "Sorry, that was not a valid expression." {
+		t.Errorf("answer = %q", answer)
+	}
+	var toolMsg *llm.Message
+	for i := range client.lastMsg {
+		if client.lastMsg[i].Role == "tool" {
+			toolMsg = &client.lastMsg[i]
+		}
+	}
+	if toolMsg == nil || !strings.HasPrefix(toolMsg.Content, "Error:") {
+		t.Errorf("expected a role:tool message beginning with 'Error:', got %+v", toolMsg)
+	}
+}
+
+// erroringThenScriptedClient returns errs[i] on call i until they run out, then
+// serves responses. It lets a test drive the auto-mode fallback: fail the first
+// native request, then satisfy the text path.
+type erroringThenScriptedClient struct {
+	firstErr error
+	replies  []string
+	calls    int
+	lastReq  llm.Request
+}
+
+func (c *erroringThenScriptedClient) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	c.lastReq = req
+	c.calls++
+	if c.calls == 1 && c.firstErr != nil {
+		return llm.Response{}, c.firstErr
+	}
+	reply := c.replies[c.calls-1]
+	return llm.Response{Content: reply}, nil
+}
+
+func TestAgentRunAutoFallsBackToTextOnStatusError(t *testing.T) {
+	// given a server that rejects the native request (a StatusError), then serves
+	// a text-path final answer on the retry
+	client := &erroringThenScriptedClient{
+		firstErr: &llm.StatusError{StatusCode: 400, Body: "unknown field tools"},
+		replies:  []string{"", "Final Answer: 42"},
+	}
+	ag := newNativeAgent(client, ToolCallingAuto, WithLabelNonce("TEST"))
+
+	// when the agent runs in auto mode
+	answer, err := ag.Run(context.Background(), "the answer?")
+
+	// then it fell back to the text path and returned the parsed final answer
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if answer != "42" {
+		t.Errorf("answer = %q, want %q", answer, "42")
+	}
+	// the retry used the text path: a stop sequence is present, tools are not
+	if len(client.lastReq.Stop) == 0 {
+		t.Error("expected the text-path stop sequence after fallback, got none")
+	}
+	if len(client.lastReq.Tools) != 0 {
+		t.Errorf("expected no tool specs on the text fallback, got %+v", client.lastReq.Tools)
+	}
+}
+
+func TestAgentRunNativeDoesNotFallBackOnTransportError(t *testing.T) {
+	// given a non-status (transport) error on the first native call
+	client := &erroringThenScriptedClient{
+		firstErr: errors.New("dial tcp: connection refused"),
+		replies:  []string{"", "unused"},
+	}
+	ag := newNativeAgent(client, ToolCallingAuto)
+
+	// when the agent runs in auto mode
+	_, err := ag.Run(context.Background(), "hi")
+
+	// then the error is surfaced, not masked by a text-path retry
+	if err == nil {
+		t.Fatal("expected the transport error to surface, got nil")
+	}
+	if client.calls != 1 {
+		t.Errorf("model calls = %d, want 1 (no fallback retry)", client.calls)
 	}
 }

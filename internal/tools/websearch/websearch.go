@@ -8,6 +8,7 @@
 package websearch
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -64,6 +65,12 @@ func (t *WebSearchTool) Name() string { return "web_search" }
 
 func (t *WebSearchTool) Description() string {
 	return "web_search(<query>): Search the web (DuckDuckGo). Put the query directly inside the parentheses, e.g. web_search(golang context package). Returns top results as title — url — snippet."
+}
+
+// Parameters is the JSON Schema for native function-calling: a single required
+// string mapped straight to Call.
+func (t *WebSearchTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","description":"The web search query, e.g. golang context package"}},"required":["query"]}`)
 }
 
 // Call runs the query and returns up to maxResults results, wrapped as untrusted

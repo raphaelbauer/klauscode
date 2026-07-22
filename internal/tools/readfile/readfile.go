@@ -3,6 +3,7 @@
 package readfile
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -23,6 +24,12 @@ func (t *ReadFileTool) Name() string { return "read_file" }
 
 func (t *ReadFileTool) Description() string {
 	return "read_file(<path>): Read a file and return its contents. Put the path directly inside the parentheses, e.g. read_file(internal/agent/agent.go)."
+}
+
+// Parameters is the JSON Schema for native function-calling: a single required
+// string mapped straight to Call.
+func (t *ReadFileTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"The path of the file to read, e.g. internal/agent/agent.go"}},"required":["path"]}`)
 }
 
 // Call reads the file named by args (the raw path) and returns its contents,

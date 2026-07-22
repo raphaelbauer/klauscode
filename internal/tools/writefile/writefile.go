@@ -3,6 +3,7 @@
 package writefile
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,13 @@ func (t *WriteFileTool) Name() string { return "write_file" }
 
 func (t *WriteFileTool) Description() string {
 	return `write_file({"path": str, "content": str}): Create or overwrite a file. Single-line JSON; escape newlines in content as \n.`
+}
+
+// Parameters is the JSON Schema for native function-calling. It has more than one
+// property, so the registry passes the arguments JSON straight to Call, which
+// decodes it into writeArgs — the same path used on the text side.
+func (t *WriteFileTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"The path of the file to create or overwrite"},"content":{"type":"string","description":"The full file content to write"}},"required":["path","content"]}`)
 }
 
 // writeArgs is the JSON shape the model passes inside the parentheses.

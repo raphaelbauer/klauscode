@@ -7,11 +7,30 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 
 	"klauscode/internal/llm"
 	"klauscode/internal/tools"
+)
+
+// ToolCalling selects how the agent invokes tools.
+//
+//   - ToolCallingNative uses the provider's structured function-calling: the model
+//     returns machine-readable tool_calls, which removes the free-text Action
+//     parsing entirely. This is the default and the most reliable path.
+//   - ToolCallingText uses the original ReAct text protocol (nonce labels, stop
+//     sequence, ParseStep, nudges). It is the fallback for models/servers without
+//     native tool-call support.
+//   - ToolCallingAuto tries native first and falls back to text if the server
+//     rejects the request (e.g. it does not implement the tools field).
+type ToolCalling string
+
+const (
+	ToolCallingNative ToolCalling = "native"
+	ToolCallingText   ToolCalling = "text"
+	ToolCallingAuto   ToolCalling = "auto"
 )
 
 // defaultMaxSteps bounds the loop so a confused model cannot run forever. Coding
@@ -60,10 +79,12 @@ func actionFormatNudge(nonce string) string {
 type Agent struct {
 	client        llm.Client
 	tools         *tools.Registry
-	system        string
+	system        string // text-path system prompt (ReAct format contract)
+	systemNative  string // native-path system prompt (no ReAct scaffolding)
 	instructions  string // optional user/project instructions injected into the prompt
 	skillsCatalog string // optional Agent Skills catalog injected into the prompt
 	nonce         string // per-run id suffixed to ReAct labels; "" means bare labels
+	toolCalling   ToolCalling
 	maxSteps      int
 	trace         io.Writer // optional; receives each turn for visibility
 }
@@ -104,6 +125,12 @@ func WithLabelNonce(nonce string) Option {
 	return func(a *Agent) { a.nonce = nonce }
 }
 
+// WithToolCalling selects how the agent invokes tools (see ToolCalling). The
+// zero value / an empty mode defaults to ToolCallingNative.
+func WithToolCalling(mode ToolCalling) Option {
+	return func(a *Agent) { a.toolCalling = mode }
+}
+
 // New builds an Agent. The system prompt is rendered from the registry so it
 // always reflects the tools actually available; it is built after options are
 // applied so WithInstructions and the label nonce can feed it.
@@ -119,12 +146,48 @@ func New(client llm.Client, reg *tools.Registry, opts ...Option) *Agent {
 	if a.nonce == "" {
 		a.nonce = newLabelNonce()
 	}
+	if a.toolCalling == "" {
+		a.toolCalling = ToolCallingNative
+	}
+	// The text prompt is always built: it backs both the text mode and the auto
+	// mode's fallback. The native prompt is built only when a native path may run.
 	a.system = BuildSystemPrompt(reg, a.skillsCatalog, a.instructions, a.nonce)
+	if a.toolCalling != ToolCallingText {
+		a.systemNative = BuildNativeSystemPrompt(reg, a.skillsCatalog, a.instructions)
+	}
 	return a
 }
 
-// Run executes the task and returns the model's final answer.
+// Run executes the task and returns the model's final answer, dispatching on the
+// configured tool-calling mode.
 func (a *Agent) Run(ctx context.Context, task string) (string, error) {
+	switch a.toolCalling {
+	case ToolCallingText:
+		return a.runText(ctx, task)
+	case ToolCallingAuto:
+		answer, startedOK, err := a.runNative(ctx, task)
+		// Fall back to the text path only when the very first native request was
+		// rejected by the server (a *llm.StatusError) — the signal that it does not
+		// implement the tools field. A transport error, or a failure after the run
+		// has already progressed, is a genuine error and is surfaced as-is.
+		if err != nil && !startedOK {
+			var se *llm.StatusError
+			if errors.As(err, &se) {
+				a.tracef("--- native tool-calling unsupported (%v); falling back to text mode ---\n", err)
+				return a.runText(ctx, task)
+			}
+		}
+		return answer, err
+	default: // ToolCallingNative
+		answer, _, err := a.runNative(ctx, task)
+		return answer, err
+	}
+}
+
+// runText executes the task using the original ReAct text protocol: the model
+// emits Action/Final Answer labels which ParseStep extracts, malformed turns are
+// steered with nudges, and the nonced Observation label is the stop sequence.
+func (a *Agent) runText(ctx context.Context, task string) (string, error) {
 	messages := []llm.Message{
 		{Role: "system", Content: a.system},
 		{Role: "user", Content: task},
@@ -142,10 +205,11 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 	obsLabel := "Observation" + a.nonce + ": "
 
 	for i := 0; i < a.maxSteps; i++ {
-		output, err := a.client.Complete(ctx, messages, []string{stop})
+		resp, err := a.client.Complete(ctx, llm.Request{Messages: messages, Stop: []string{stop}})
 		if err != nil {
 			return "", fmt.Errorf("model call failed: %w", err)
 		}
+		output := resp.Content
 		a.tracef("--- model turn %d ---\n%s\n", i+1, output)
 		messages = append(messages, llm.Message{Role: "assistant", Content: output})
 
@@ -207,6 +271,79 @@ func (a *Agent) Run(ctx context.Context, task string) (string, error) {
 	}
 
 	return "", fmt.Errorf("reached step limit (%d) without a final answer", a.maxSteps)
+}
+
+// runNative executes the task using the provider's native function-calling. Each
+// turn either returns tool_calls (which we execute and feed back as role:"tool"
+// messages) or returns plain content — and content with no tool_calls is, by
+// definition, the model's final answer. There is no text parsing, nonce, stop
+// sequence, or nudge machinery on this path.
+//
+// startedOK reports whether at least one model response was received; the caller
+// (auto mode) uses it to distinguish a server that rejected the very first
+// request — a candidate for the text fallback — from a mid-run failure.
+func (a *Agent) runNative(ctx context.Context, task string) (answer string, startedOK bool, err error) {
+	specs := toolSpecs(a.tools)
+	messages := []llm.Message{
+		{Role: "system", Content: a.systemNative},
+		{Role: "user", Content: task},
+	}
+
+	for i := 0; i < a.maxSteps; i++ {
+		resp, err := a.client.Complete(ctx, llm.Request{Messages: messages, Tools: specs})
+		if err != nil {
+			return "", startedOK, fmt.Errorf("model call failed: %w", err)
+		}
+		startedOK = true
+		a.tracef("--- model turn %d ---\n", i+1)
+
+		if len(resp.ToolCalls) == 0 {
+			// No tool calls: the model is addressing the user, so this is the answer.
+			a.tracef("%s\n", resp.Content)
+			return resp.Content, startedOK, nil
+		}
+
+		// Echo the assistant's tool-call turn back into history so the following
+		// role:"tool" results are correctly paired by tool_call_id.
+		messages = append(messages, llm.Message{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
+		for _, tc := range resp.ToolCalls {
+			args := a.tools.MapToolCallArgs(tc.Name, tc.Arguments)
+			a.tracef("--- tool call: %s(%s) ---\n", tc.Name, tc.Arguments)
+			observation := a.runTool(Step{ToolName: tc.Name, ToolArgs: args})
+			a.tracef("--- result ---\n%s\n", observation)
+			messages = append(messages, llm.Message{
+				Role:       "tool",
+				ToolCallID: tc.ID,
+				Name:       tc.Name,
+				Content:    observation,
+			})
+		}
+	}
+
+	return "", startedOK, fmt.Errorf("reached step limit (%d) without a final answer", a.maxSteps)
+}
+
+// toolSpecs builds the native function-call specs from the registry. Only tools
+// that expose a JSON Schema (implement tools.Schematic) are offered; a tool
+// without one is silently skipped on the native path.
+func toolSpecs(reg *tools.Registry) []llm.ToolSpec {
+	var specs []llm.ToolSpec
+	for _, t := range reg.List() {
+		schema, ok := reg.Schema(t.Name())
+		if !ok {
+			continue
+		}
+		specs = append(specs, llm.ToolSpec{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  schema,
+		})
+	}
+	return specs
 }
 
 // runTool executes the requested tool and returns the text to feed back as the
