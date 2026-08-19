@@ -75,6 +75,10 @@ func actionFormatNudge(nonce string) string {
 	return fmt.Sprintf(`Observation%[1]s: Your Action could not be parsed. Write the call as a single "Action%[1]s: tool_name(arguments)" that is the LAST thing in your turn. For write_file/edit_file the argument is a JSON object, e.g. Action%[1]s: write_file({"path": "file.txt", "content": "line one\nline two"}); the JSON may span multiple lines but newlines inside string values must be escaped as \n.`, nonce)
 }
 
+// emptyResultPlaceholder stands in for a tool result that is the empty string,
+// so every observation fed back to the model carries visible content.
+const emptyResultPlaceholder = "(no output)"
+
 // Agent drives a single task to completion through the ReAct loop.
 type Agent struct {
 	client        llm.Client
@@ -353,6 +357,14 @@ func (a *Agent) runTool(step Step) string {
 	result, err := a.tools.Execute(step.ToolName, step.ToolArgs)
 	if err != nil {
 		return "Error: " + err.Error()
+	}
+	if result == "" {
+		// A tool can legitimately succeed with no output (a grep that matched
+		// nothing, a build that printed nothing). Say so explicitly: a blank
+		// observation reads to the model as a broken tool, and on the native path
+		// it would also produce a role:"tool" message with empty content, which
+		// providers reject.
+		return emptyResultPlaceholder
 	}
 	return result
 }

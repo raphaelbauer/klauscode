@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -468,5 +469,71 @@ func TestAgentRunNativeDoesNotFallBackOnTransportError(t *testing.T) {
 	}
 	if client.calls != 1 {
 		t.Errorf("model calls = %d, want 1 (no fallback retry)", client.calls)
+	}
+}
+
+// silentTool succeeds with no output, like a grep that matched nothing or a
+// build that printed nothing.
+type silentTool struct{}
+
+func (silentTool) Name() string        { return "silent" }
+func (silentTool) Description() string { return "silent(<anything>): returns nothing." }
+func (silentTool) Call(string) (string, error) {
+	return "", nil
+}
+func (silentTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}`)
+}
+
+func TestAgentRunNativeEmptyToolResultIsNotEmptyContent(t *testing.T) {
+	// given a tool that succeeds with empty output, then a final reply
+	client := &scriptedClient{responses: []llm.Response{
+		{ToolCalls: []llm.ToolCall{{ID: "call_1", Name: "silent", Arguments: `{"input":"x"}`}}},
+		{Content: "Nothing matched."},
+	}}
+	reg := tools.NewRegistry()
+	reg.Register(silentTool{})
+	ag := New(client, reg, WithToolCalling(ToolCallingNative))
+
+	// when the agent runs
+	answer, err := ag.Run(context.Background(), "search for it")
+
+	// then the run completes
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if answer != "Nothing matched." {
+		t.Errorf("answer = %q, want %q", answer, "Nothing matched.")
+	}
+
+	// and the role:"tool" message carries non-empty content. An empty one
+	// serializes without a content key and the provider rejects the next request
+	// with 400 "Invalid 'content': ...", killing the run.
+	var toolMsg *llm.Message
+	for i := range client.lastMsg {
+		if client.lastMsg[i].Role == "tool" {
+			toolMsg = &client.lastMsg[i]
+		}
+	}
+	if toolMsg == nil {
+		t.Fatalf("no role:tool message threaded back, got %+v", client.lastMsg)
+	}
+	if toolMsg.Content == "" {
+		t.Error("tool message Content is empty; an empty tool result must be reported as visible text")
+	}
+}
+
+func TestRunToolEmptyResultGetsPlaceholder(t *testing.T) {
+	// given a registry holding a tool that returns empty output
+	reg := tools.NewRegistry()
+	reg.Register(silentTool{})
+	ag := New(&scriptedClient{}, reg)
+
+	// when the tool is executed
+	got := ag.runTool(Step{ToolName: "silent", ToolArgs: "x"})
+
+	// then the observation is the placeholder, not ""
+	if got != emptyResultPlaceholder {
+		t.Errorf("runTool = %q, want %q", got, emptyResultPlaceholder)
 	}
 }

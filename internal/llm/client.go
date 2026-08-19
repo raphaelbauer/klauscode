@@ -130,7 +130,7 @@ func NewOpenAIClient(apiKey, model string, opts ...Option) *OpenAIClient {
 		apiKey:     apiKey,
 		model:      model,
 		baseURL:    defaultBaseURL,
-		httpClient: &http.Client{Timeout: 5 * time.Minute},
+		httpClient: &http.Client{Timeout: 10 * time.Minute},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -149,8 +149,13 @@ type chatRequest struct {
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content,omitempty"`
+	Role string `json:"role"`
+	// Content is emitted even when empty. It must NOT carry omitempty: a tool
+	// whose output is empty (a grep that matched nothing, a silent build) would
+	// otherwise serialize a role:"tool" message with no content key at all, and
+	// the API rejects that with 400 "Invalid 'content': 'content' field must be
+	// a string or an array of objects".
+	Content string `json:"content"`
 
 	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`

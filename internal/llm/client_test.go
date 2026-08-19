@@ -173,3 +173,46 @@ func TestOpenAIClientNoChoices(t *testing.T) {
 		t.Fatal("expected error for empty choices, got nil")
 	}
 }
+
+func TestCompleteAlwaysSendsContentField(t *testing.T) {
+	// given a stub server that captures the raw request body, so a *missing* key
+	// is visible (decoding into chatRequest would silently zero it)
+	var raw []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+	client := NewOpenAIClient("k", "m", WithBaseURL(server.URL+"/v1"))
+
+	// when the history contains messages whose content is empty — an assistant
+	// turn that only requested tools, and a tool result with no output (e.g. a
+	// grep that matched nothing)
+	_, err := client.Complete(context.Background(), Request{Messages: []Message{
+		{Role: "user", Content: "find the routes"},
+		{Role: "assistant", Content: "", ToolCalls: []ToolCall{{ID: "call_1", Name: "bash", Arguments: `{"command":"grep -r x ."}`}}},
+		{Role: "tool", ToolCallID: "call_1", Name: "bash", Content: ""},
+	}})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+
+	// then every serialized message carries a content key. Omitting it makes the
+	// API reject the request with 400 "Invalid 'content': 'content' field must be
+	// a string or an array of objects", which aborts the whole run.
+	var body struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("unmarshal request body: %v", err)
+	}
+	if len(body.Messages) != 3 {
+		t.Fatalf("messages = %d, want 3", len(body.Messages))
+	}
+	for i, m := range body.Messages {
+		if _, ok := m["content"]; !ok {
+			t.Errorf("messages[%d] (role %v) has no content key: %v", i, m["role"], m)
+		}
+	}
+}
