@@ -523,6 +523,166 @@ func TestAgentRunNativeEmptyToolResultIsNotEmptyContent(t *testing.T) {
 	}
 }
 
+// countingTool records how many times it was actually executed, so a test can
+// assert that a repeated call was skipped rather than inferring it from text.
+type countingTool struct{ calls int }
+
+func (*countingTool) Name() string { return "counter" }
+func (*countingTool) Description() string {
+	return "counter(<anything>): returns a fixed string."
+}
+func (c *countingTool) Call(string) (string, error) {
+	c.calls++
+	return "same output every time", nil
+}
+func (*countingTool) Parameters() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}`)
+}
+
+// nativeRepeat is the same tool call repeated; distinct ids mirror a real
+// provider, which mints a new one per call even when the arguments are identical.
+func nativeRepeat(id string) llm.Response {
+	return llm.Response{ToolCalls: []llm.ToolCall{{ID: id, Name: "counter", Arguments: `{"input":"x"}`}}}
+}
+
+func TestRepeatGuardCountsConsecutiveCalls(t *testing.T) {
+	// given a fresh guard
+	var guard repeatGuard
+
+	// when the same call is observed twice, then a different one, then the first again
+	calls := []struct {
+		name, args string
+		want       int
+	}{
+		{"bash", "ls", 0},  // first sighting
+		{"bash", "ls", 1},  // first repeat
+		{"bash", "ls", 2},  // second repeat
+		{"bash", "pwd", 0}, // different args reset the streak
+		{"bash", "ls", 0},  // and the old signature is no longer remembered
+		{"cat", "pwd", 0},  // same args, different tool
+	}
+
+	// then only back-to-back identical calls count as repeats
+	for i, c := range calls {
+		if got := guard.observe(c.name, c.args); got != c.want {
+			t.Errorf("call %d observe(%q, %q) = %d, want %d", i, c.name, c.args, got, c.want)
+		}
+	}
+}
+
+func TestAgentRunNativeWarnsOnRepeatedToolCall(t *testing.T) {
+	// given a model that asks for the identical tool call twice, then answers
+	client := &scriptedClient{responses: []llm.Response{
+		nativeRepeat("call_1"),
+		nativeRepeat("call_2"),
+		{Content: "Done."},
+	}}
+	counter := &countingTool{}
+	reg := tools.NewRegistry()
+	reg.Register(counter)
+	ag := New(client, reg, WithToolCalling(ToolCallingNative))
+
+	// when the agent runs
+	answer, err := ag.Run(context.Background(), "count things")
+
+	// then the run still finishes normally
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if answer != "Done." {
+		t.Errorf("answer = %q, want %q", answer, "Done.")
+	}
+
+	// and the repeated call was answered with a warning instead of being run again
+	if counter.calls != 1 {
+		t.Errorf("tool executed %d times, want 1 (the repeat must not run)", counter.calls)
+	}
+	var toolMsgs []llm.Message
+	for _, m := range client.lastMsg {
+		if m.Role == "tool" {
+			toolMsgs = append(toolMsgs, m)
+		}
+	}
+	if len(toolMsgs) != 2 {
+		t.Fatalf("got %d role:tool messages, want 2 — every tool_call_id must be answered", len(toolMsgs))
+	}
+	if toolMsgs[0].Content != "same output every time" {
+		t.Errorf("first tool message = %q, want the real result", toolMsgs[0].Content)
+	}
+	if !strings.Contains(toolMsgs[1].Content, "NOT run again") {
+		t.Errorf("second tool message = %q, want the repeat warning", toolMsgs[1].Content)
+	}
+	if toolMsgs[1].ToolCallID != "call_2" {
+		t.Errorf("warning ToolCallID = %q, want call_2", toolMsgs[1].ToolCallID)
+	}
+}
+
+func TestAgentRunNativeAbortsAfterRepeatLimit(t *testing.T) {
+	// given a model that will not stop repeating, and a limit of one repeat
+	client := &scriptedClient{responses: []llm.Response{
+		nativeRepeat("call_1"),
+		nativeRepeat("call_2"),
+		{Content: "unreachable"},
+	}}
+	counter := &countingTool{}
+	reg := tools.NewRegistry()
+	reg.Register(counter)
+	ag := New(client, reg, WithToolCalling(ToolCallingNative), WithMaxRepeats(1))
+
+	// when the agent runs
+	_, err := ag.Run(context.Background(), "count things")
+
+	// then the run aborts naming the stuck tool, rather than burning the step limit
+	if err == nil {
+		t.Fatal("Run returned no error, want a repeat-limit abort")
+	}
+	if !strings.Contains(err.Error(), "counter") {
+		t.Errorf("error = %q, want it to name the repeated tool", err)
+	}
+	if strings.Contains(err.Error(), "step limit") {
+		t.Errorf("error = %q, want the repeat abort, not the step-limit backstop", err)
+	}
+	if counter.calls != 1 {
+		t.Errorf("tool executed %d times, want 1", counter.calls)
+	}
+}
+
+func TestAgentRunTextWarnsOnRepeatedAction(t *testing.T) {
+	// given a model that emits the identical Action twice, then a final answer
+	client := &scriptedClient{replies: []string{
+		"Action: calculate(2+2)",
+		"Action: calculate(2+2)",
+		"Final Answer: 4",
+	}}
+	ag := newTestAgent(client)
+
+	// when the agent runs
+	answer, err := ag.Run(context.Background(), "what is 2+2?")
+
+	// then the run finishes and the repeat came back as a warning observation
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if answer != "4" {
+		t.Errorf("answer = %q, want 4", answer)
+	}
+	var observations []string
+	for _, m := range client.lastMsg {
+		if m.Role == "user" && strings.HasPrefix(m.Content, "ObservationTEST: ") {
+			observations = append(observations, m.Content)
+		}
+	}
+	if len(observations) != 2 {
+		t.Fatalf("got %d observations, want 2: %v", len(observations), observations)
+	}
+	if observations[0] != "ObservationTEST: 4" {
+		t.Errorf("first observation = %q, want the real result", observations[0])
+	}
+	if !strings.Contains(observations[1], "NOT run again") {
+		t.Errorf("second observation = %q, want the repeat warning", observations[1])
+	}
+}
+
 func TestRunToolEmptyResultGetsPlaceholder(t *testing.T) {
 	// given a registry holding a tool that returns empty output
 	reg := tools.NewRegistry()
