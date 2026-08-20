@@ -80,6 +80,16 @@ func run() error {
 		}
 		opts = append(opts, llm.WithTimeout(time.Duration(secs)*time.Second))
 	}
+	// OPENAI_TEMPERATURE overrides the sampling temperature (0–2). Lower is more
+	// literal but more prone to getting stuck repeating itself; raise it if a model
+	// keeps looping, lower it if it mangles tool arguments.
+	if v := os.Getenv("OPENAI_TEMPERATURE"); v != "" {
+		temp, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return fmt.Errorf("OPENAI_TEMPERATURE must be a number between 0 and 2: %q", v)
+		}
+		opts = append(opts, llm.WithTemperature(temp))
+	}
 	client := llm.NewOpenAIClient(apiKey, model, opts...)
 
 	registry := tools.NewRegistry()

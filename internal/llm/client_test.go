@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -63,6 +64,53 @@ func TestOpenAIClientComplete(t *testing.T) {
 	// the text path must not send a tools field
 	if gotBody.Tools != nil {
 		t.Errorf("tools = %v, want nil on the text path", gotBody.Tools)
+	}
+}
+
+func TestOpenAIClientTemperature(t *testing.T) {
+	// given a stub server recording the temperature it was sent. The raw body is
+	// kept too: decoding alone cannot tell an explicit 0 from an omitted field.
+	var gotBody chatRequest
+	var gotRaw string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotRaw = string(body)
+		_ = json.Unmarshal(body, &gotBody)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name string
+		opt  []Option
+		want float64
+	}{
+		{name: "default", want: defaultTemperature},
+		{name: "override", opt: []Option{WithTemperature(1.1)}, want: 1.1},
+		{name: "explicit zero is sent, not dropped", opt: []Option{WithTemperature(0)}, want: 0},
+		{name: "above range is clamped", opt: []Option{WithTemperature(9)}, want: 2},
+		{name: "below range is clamped", opt: []Option{WithTemperature(-1)}, want: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// when a client built with those options completes a request
+			opts := append([]Option{WithBaseURL(server.URL + "/v1")}, tt.opt...)
+			client := NewOpenAIClient("test-key", "gpt-4o-mini", opts...)
+			if _, err := client.Complete(context.Background(), Request{
+				Messages: []Message{{Role: "user", Content: "hi"}},
+			}); err != nil {
+				t.Fatalf("Complete returned error: %v", err)
+			}
+
+			// then the request carried the expected temperature, as a real field —
+			// an omitted one would leave the provider's own default in force
+			if !strings.Contains(gotRaw, `"temperature":`) {
+				t.Errorf("body has no temperature field: %s", gotRaw)
+			}
+			if gotBody.Temperature != tt.want {
+				t.Errorf("temperature = %v, want %v", gotBody.Temperature, tt.want)
+			}
+		})
 	}
 }
 

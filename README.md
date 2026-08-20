@@ -46,6 +46,15 @@ on a small set of tools (notably `bash`) rather than many specialised ones.
 The whole loop lives in [internal/agent/agent.go](internal/agent/agent.go)
 (`runNative` and `runText`).
 
+If the model asks for the *identical* tool call twice in a row, the harness does
+not run it again: the result is already in the model's context and cannot have
+changed, so it feeds back a warning that the model is repeating itself. After a
+few ignored warnings the run stops with an error naming the tool, instead of
+spinning to the step limit. The default temperature of `0.2` (see
+`OPENAI_TEMPERATURE`) is the other half of that defence: fully deterministic
+decoding makes a turn a pure function of its context, which is what lets a
+repetition loop become inescapable in the first place.
+
 ## Tools
 
 | Tool | Argument | Purpose |
@@ -141,6 +150,7 @@ GOOS=linux GOARCH=amd64 go build -o klauscode-linux ./cmd/klauscode
 | `OPENAI_BASE_URL`     | `https://api.openai.com/v1`  | API base URL (ending in `/v1`); `/chat/completions` is appended. |
 | `OPENAI_TIMEOUT`      | `300`                        | Per-request HTTP timeout in seconds; `0` waits indefinitely (for slow local servers). |
 | `OPENAI_TOOL_CALLING` | `native`                     | How tools are invoked: `native` (structured function-calling), `text` (ReAct text protocol), or `auto` (native, falling back to text if the server rejects it). See [Tool calling](#tool-calling). |
+| `OPENAI_TEMPERATURE`  | `0.2`                        | Sampling temperature, `0`–`2` (out-of-range values are clamped). Low keeps tool arguments literal; `0` is fully deterministic and therefore the most prone to repetition loops. Raise it if a model keeps repeating itself, lower it if it mangles tool arguments. |
 
 \* Required only for the public OpenAI API. When `OPENAI_BASE_URL` points at a
 local server, the key is optional (a placeholder is used).

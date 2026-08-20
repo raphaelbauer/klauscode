@@ -38,6 +38,52 @@ const (
 // calculation, so the default is generous; the limit still backstops a runaway.
 const defaultMaxSteps = 1000
 
+// defaultMaxRepeats is the repetition count at which a run is aborted: with 3,
+// the first and second repeats of an identical tool call are answered with a
+// warning (giving the model two chances to break out) and the third ends the
+// run. See repeatGuard for why a model gets stuck this way.
+const defaultMaxRepeats = 3
+
+// repeatGuard detects a model stuck re-issuing an identical tool call.
+//
+// Greedy decoding (the client pins temperature to 0 for deterministic tool use)
+// makes a turn a deterministic function of its context, and every identical
+// (call, result) pair appended to the history makes the same call more likely
+// next turn — a self-reinforcing repetition attractor. Once in it, the model
+// cannot escape on its own, and the maxSteps backstop is far too loose to help.
+//
+// The check is deliberately the simplest thing that catches this: one previous
+// call signature and a plain string comparison, no hashing and no history scan,
+// because the failure mode is literal back-to-back repetition.
+type repeatGuard struct {
+	last    string // previous call's signature: name + args
+	repeats int    // consecutive re-requests of last (0 = first time seen)
+}
+
+// observe records a call and returns how many times in a row it has now been
+// repeated: 0 the first time it is seen, 1 on the first repetition, and so on.
+func (g *repeatGuard) observe(name, args string) int {
+	// The separator cannot appear in a tool name, so no two distinct calls can
+	// collide on the same signature.
+	sig := name + "\x00" + args
+	if sig == g.last {
+		g.repeats++
+		return g.repeats
+	}
+	g.last, g.repeats = sig, 0
+	return 0
+}
+
+// repeatWarning is fed back in place of a repeated tool call's result. It says
+// plainly what happened and what to do instead: the model is not reasoning about
+// a new observation, it is echoing one already in its context, so the way out is
+// to answer or to act differently — never to try the same call again. The
+// "Error:" prefix matches the self-correcting convention runTool already uses for
+// tool failures, which models react to more reliably than neutral prose.
+func repeatWarning(name string, repeats int) string {
+	return fmt.Sprintf("Error: you have now requested this exact %s call %d times in a row with identical arguments. It was NOT run again — the result of the previous run is already above and has not changed. Repeating it cannot make progress. Either use that result to answer now, or take a different action (a different tool, or different arguments).", name, repeats+1)
+}
+
 // newLabelNonce returns a short random hex id used to suffix the ReAct control
 // labels (Action/Observation/…). The Observation label becomes the stop sequence,
 // so making it unguessable means content the model writes — even a file that
@@ -90,6 +136,7 @@ type Agent struct {
 	nonce         string // per-run id suffixed to ReAct labels; "" means bare labels
 	toolCalling   ToolCalling
 	maxSteps      int
+	maxRepeats    int       // consecutive identical tool calls tolerated before aborting
 	trace         io.Writer // optional; receives each turn for visibility
 }
 
@@ -101,6 +148,17 @@ func WithMaxSteps(n int) Option {
 	return func(a *Agent) {
 		if n > 0 {
 			a.maxSteps = n
+		}
+	}
+}
+
+// WithMaxRepeats overrides how many consecutive identical tool calls are
+// tolerated before the run is aborted (see repeatGuard). Each repeat before the
+// limit is answered with a warning instead of running the tool.
+func WithMaxRepeats(n int) Option {
+	return func(a *Agent) {
+		if n > 0 {
+			a.maxRepeats = n
 		}
 	}
 }
@@ -140,9 +198,10 @@ func WithToolCalling(mode ToolCalling) Option {
 // applied so WithInstructions and the label nonce can feed it.
 func New(client llm.Client, reg *tools.Registry, opts ...Option) *Agent {
 	a := &Agent{
-		client:   client,
-		tools:    reg,
-		maxSteps: defaultMaxSteps,
+		client:     client,
+		tools:      reg,
+		maxSteps:   defaultMaxSteps,
+		maxRepeats: defaultMaxRepeats,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -205,6 +264,10 @@ func (a *Agent) runText(ctx context.Context, task string) (string, error) {
 	consecutiveMisses := 0
 	candidateFinal := ""
 
+	// guard is run-scoped, not Agent state: an Agent is reusable across Run calls
+	// and must not carry one run's history into the next.
+	var guard repeatGuard
+
 	stop := observationStop(a.nonce)
 	obsLabel := "Observation" + a.nonce + ": "
 
@@ -226,7 +289,10 @@ func (a *Agent) runText(ctx context.Context, task string) (string, error) {
 		if step.HasAction {
 			consecutiveMisses = 0
 			candidateFinal = ""
-			observation := a.runTool(step)
+			observation, err := a.runToolGuarded(&guard, step, step.ToolArgs)
+			if err != nil {
+				return "", err
+			}
 			a.tracef("%s%s\n", obsLabel, observation)
 			messages = append(messages, llm.Message{
 				Role:    "user",
@@ -293,6 +359,10 @@ func (a *Agent) runNative(ctx context.Context, task string) (answer string, star
 		{Role: "user", Content: task},
 	}
 
+	// guard is run-scoped, not Agent state: an Agent is reusable across Run calls
+	// and must not carry one run's history into the next.
+	var guard repeatGuard
+
 	for i := 0; i < a.maxSteps; i++ {
 		resp, err := a.client.Complete(ctx, llm.Request{Messages: messages, Tools: specs})
 		if err != nil {
@@ -317,8 +387,17 @@ func (a *Agent) runNative(ctx context.Context, task string) (answer string, star
 		for _, tc := range resp.ToolCalls {
 			args := a.tools.MapToolCallArgs(tc.Name, tc.Arguments)
 			a.tracef("--- tool call: %s(%s) ---\n", tc.Name, tc.Arguments)
-			observation := a.runTool(Step{ToolName: tc.Name, ToolArgs: args})
+			// The signature is the RAW arguments JSON, i.e. exactly what the model
+			// emitted, not the mapped form.
+			step := Step{ToolName: tc.Name, ToolArgs: args}
+			observation, err := a.runToolGuarded(&guard, step, tc.Arguments)
+			if err != nil {
+				return "", startedOK, err
+			}
 			a.tracef("--- result ---\n%s\n", observation)
+			// A skipped call still gets its role:"tool" message: every tool_call_id in
+			// an assistant turn must be answered or the provider rejects the next
+			// request. Only the content differs.
 			messages = append(messages, llm.Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,
@@ -348,6 +427,29 @@ func toolSpecs(reg *tools.Registry) []llm.ToolSpec {
 		})
 	}
 	return specs
+}
+
+// runToolGuarded runs step's tool unless the model has just requested the exact
+// same call — see repeatGuard for why that happens and why it cannot recover on
+// its own. sigArgs is the argument text the repeat is judged on: the raw
+// arguments the model emitted, which differs from step.ToolArgs on the native
+// path (where the latter has already been mapped for Call).
+//
+// On a repeat the tool is NOT run: its output is already verbatim in the model's
+// context and cannot have changed, so re-running only costs time and feeds the
+// pattern. The warning takes the result's place, giving the model something new
+// to react to. A model that repeats anyway past a.maxRepeats ends the run with an
+// error, which is far more diagnostic than spinning out the step limit.
+func (a *Agent) runToolGuarded(guard *repeatGuard, step Step, sigArgs string) (string, error) {
+	repeats := guard.observe(step.ToolName, sigArgs)
+	if repeats == 0 {
+		return a.runTool(step), nil
+	}
+	if repeats >= a.maxRepeats {
+		return "", fmt.Errorf("model repeated the same %s call %d times in a row without making progress", step.ToolName, repeats+1)
+	}
+	a.tracef("--- repeated tool call: %s (not run) ---\n", step.ToolName)
+	return repeatWarning(step.ToolName, repeats), nil
 }
 
 // runTool executes the requested tool and returns the text to feed back as the

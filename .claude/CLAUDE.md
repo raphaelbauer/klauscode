@@ -17,7 +17,12 @@ Layered with interface-based DI; `cmd/klauscode` is the composition root.
   `*StatusError` so the agent's `auto` mode can tell a rejected request from a
   transport failure. Override the API base URL (ending in `/v1`) via `WithBaseURL`;
   the client appends `/chat/completions`. Used for local servers (LM Studio) and
-  httptest.
+  httptest. Sampling temperature defaults to `0.2` (`defaultTemperature`,
+  overridable via `WithTemperature`, clamped to 0–2): low enough that tool
+  arguments stay literal, non-zero so a model can escape a repetition rut on its
+  own — see the repeat-guard convention below. The `temperature` JSON field must
+  keep **no** `omitempty`, or an explicit `0` would be dropped and the provider's
+  own default (1.0) would silently take over.
 - `internal/tools` — `Tool` interface and `Registry`, with one package per tool:
   `calculate` (recursive-descent arithmetic evaluator in `eval.go`), `readfile`,
   `writefile`, `editfile`, `bash`, `websearch`, `webfetch`, `skill` (serves Agent
@@ -38,7 +43,8 @@ Layered with interface-based DI; `cmd/klauscode` is the composition root.
   parser (`parser.go`, used only by `runText`).
 - `cmd/klauscode` — reads `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL` /
   `OPENAI_TOOL_CALLING` (`native` default | `text` | `auto`, via
-  `agent.WithToolCalling`), wires, runs. When `OPENAI_BASE_URL` is set, the API key
+  `agent.WithToolCalling`) / `OPENAI_TIMEOUT` / `OPENAI_TEMPERATURE` (a number,
+  via `llm.WithTemperature`), wires, runs. When `OPENAI_BASE_URL` is set, the API key
   is optional (a placeholder is used) so local OpenAI-compatible servers work
   without a key. It also resolves `~/.claude` + the cwd and feeds
   `agent.LoadInstructions` into `agent.WithInstructions`, plus `skills.Discover`
@@ -133,6 +139,22 @@ disclosure** so the prompt stays small even with many installed:
 - Tool errors are returned to the model as `Observation<nonce>: Error: ...` so it
   can self-correct; the run does not abort on a tool error.
 - Final answer takes precedence over an action in the same turn.
+- **An identical, back-to-back tool call is not executed twice — the model is told
+  it is repeating itself.** Both loops route tool execution through
+  `runToolGuarded` (agent.go), which keeps a run-scoped `repeatGuard`: one previous
+  call signature (`name + "\x00" + args`) and a counter, compared as plain strings
+  — no hashing, no history scan. The failure it fixes is a *repetition attractor*:
+  at low temperature a turn is close to a deterministic function of its context,
+  and every identical (call, result) pair
+  appended to the history makes the same call likelier next turn. A real run got
+  stuck re-issuing one `bash` call past turn 200. On a repeat the tool is **not**
+  run (its output is already verbatim in context and cannot have changed) and
+  `repeatWarning` takes the result's place, so the model gets something new to
+  react to; at `maxRepeats` (default 3, `WithMaxRepeats`) the run aborts naming the
+  tool, which is far more diagnostic than the step limit. On the native path the
+  signature is the **raw** `tc.Arguments` (what the model emitted, pre
+  `MapToolCallArgs`), and a skipped call **still** gets its `role:"tool"` message —
+  every `tool_call_id` must be answered or the provider 400s the next request.
 - **Final-answer detection is lenient, and a no-action turn is an implicit final
   answer.** Small local models (e.g. Gemma) render the label inconsistently or
   omit it entirely. So `finalRe` is case-insensitive and tolerates markdown

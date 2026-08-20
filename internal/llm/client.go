@@ -89,12 +89,24 @@ func (e *StatusError) Error() string {
 // appended to it when a request is built.
 const defaultBaseURL = "https://api.openai.com/v1"
 
+// defaultTemperature is a deliberate compromise for an agentic loop.
+//
+// Tool use wants low temperature: argument JSON, paths and tool names should not
+// be creatively rewritten. But *zero* makes each turn a deterministic function of
+// its context, and in a loop the model's own output becomes that context — so a
+// model that starts repeating a tool call has no way out, since the identical
+// history yields the identical next turn forever (agent.repeatGuard exists to
+// catch exactly that). A small non-zero value keeps formatting stable while
+// leaving enough entropy to break out of such a rut on its own.
+const defaultTemperature = 0.2
+
 // OpenAIClient is a Client backed by the OpenAI chat completions API.
 type OpenAIClient struct {
-	apiKey     string
-	model      string
-	baseURL    string
-	httpClient *http.Client
+	apiKey      string
+	model       string
+	baseURL     string
+	temperature float64
+	httpClient  *http.Client
 }
 
 // Option configures an OpenAIClient.
@@ -124,13 +136,29 @@ func WithTimeout(d time.Duration) Option {
 	}
 }
 
+// WithTemperature overrides the sampling temperature (see defaultTemperature).
+// Values outside the API's 0–2 range are clamped rather than rejected, so a
+// caller cannot turn a config typo into a 400 from the provider.
+func WithTemperature(t float64) Option {
+	return func(c *OpenAIClient) {
+		if t < 0 {
+			t = 0
+		}
+		if t > 2 {
+			t = 2
+		}
+		c.temperature = t
+	}
+}
+
 // NewOpenAIClient builds a client for the given key and model.
 func NewOpenAIClient(apiKey, model string, opts ...Option) *OpenAIClient {
 	c := &OpenAIClient{
-		apiKey:     apiKey,
-		model:      model,
-		baseURL:    defaultBaseURL,
-		httpClient: &http.Client{Timeout: 10 * time.Minute},
+		apiKey:      apiKey,
+		model:       model,
+		baseURL:     defaultBaseURL,
+		temperature: defaultTemperature,
+		httpClient:  &http.Client{Timeout: 10 * time.Minute},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -140,12 +168,15 @@ func NewOpenAIClient(apiKey, model string, opts ...Option) *OpenAIClient {
 
 // chatRequest is the JSON body we send to OpenAI.
 type chatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Stop        []string      `json:"stop,omitempty"`
-	Temperature float64       `json:"temperature"`
-	Tools       []chatTool    `json:"tools,omitempty"`
-	ToolChoice  string        `json:"tool_choice,omitempty"`
+	Model    string        `json:"model"`
+	Messages []chatMessage `json:"messages"`
+	Stop     []string      `json:"stop,omitempty"`
+	// Temperature must NOT carry omitempty: a caller asking for 0 (fully
+	// deterministic) means it, and omitempty would silently drop the field and
+	// leave the provider's own default (1.0 on OpenAI) in force instead.
+	Temperature float64    `json:"temperature"`
+	Tools       []chatTool `json:"tools,omitempty"`
+	ToolChoice  string     `json:"tool_choice,omitempty"`
 }
 
 type chatMessage struct {
@@ -201,7 +232,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req Request) (Response, err
 		Model:       c.model,
 		Messages:    toChatMessages(req.Messages),
 		Stop:        req.Stop,
-		Temperature: 0, // deterministic tool use
+		Temperature: c.temperature,
 		Tools:       toChatTools(req.Tools),
 		ToolChoice:  req.ToolChoice,
 	}
